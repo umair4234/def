@@ -25,6 +25,7 @@ export type AutomationJobStatus = 'PENDING' | 'RUNNING' | 'DONE' | 'FAILED';
 
 export interface ScriptJob {
   id: string;
+  source: 'MANUAL' | 'AUTOMATION';
   // Inputs
   title: string;
   concept: string;

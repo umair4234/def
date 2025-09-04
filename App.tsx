@@ -40,7 +40,7 @@ const App: React.FC = () => {
   const [isAuthenticated, setIsAuthenticated] = useState(sessionStorage.getItem('isAuthenticated') === 'true');
 
   // --- Global State ---
-  const [view, setView] = useState<AppView>('MANUAL');
+  const [view, setView] = useState<AppView>('AUTOMATION');
   const [error, setError] = useState<string | null>(null);
   
   // --- API Key Management ---
@@ -51,6 +51,7 @@ const App: React.FC = () => {
   const [jobs, setJobs] = useLocalStorage<ScriptJob[]>('automation_jobs', []);
   const [automationStatus, setAutomationStatus] = useState<'IDLE' | 'RUNNING' | 'PAUSED'>('IDLE');
   const automationStatusRef = useRef(automationStatus);
+  const jobsRef = useRef(jobs);
   const [automationTitle, setAutomationTitle] = useState('');
   const [automationConcept, setAutomationConcept] = useState('');
   const [automationDuration, setAutomationDuration] = useState(40);
@@ -74,6 +75,10 @@ const App: React.FC = () => {
   useEffect(() => {
     automationStatusRef.current = automationStatus;
   }, [automationStatus]);
+
+  useEffect(() => {
+    jobsRef.current = jobs;
+  }, [jobs]);
   
   const jobToDisplay = selectedJobToView || manualScriptData;
 
@@ -215,6 +220,7 @@ const App: React.FC = () => {
 
         const newJob: ScriptJob = {
           id: `job_${Date.now()}`,
+          source: 'MANUAL',
           title: manualTitle,
           concept: manualConcept,
           duration: manualDuration,
@@ -248,6 +254,7 @@ const App: React.FC = () => {
     setError(null);
     const newJob: ScriptJob = {
       id: `job_${Date.now()}`,
+      source: 'AUTOMATION',
       title: automationTitle,
       concept: automationConcept,
       duration: automationDuration,
@@ -274,7 +281,7 @@ const App: React.FC = () => {
             setIsApiManagerOpen(true);
             return;
         }
-        const hasPending = jobs.some(j => j.status === 'PENDING' || j.status === 'FAILED');
+        const hasPending = jobs.some(j => j.source === 'AUTOMATION' && (j.status === 'PENDING' || j.status === 'FAILED'));
         if (!hasPending) {
             alert("No pending or failed jobs in the queue to run.");
             return;
@@ -311,9 +318,9 @@ const App: React.FC = () => {
     const processQueue = async () => {
       if (isCancelled) return;
       
-      const nextJob = jobs.find(j => j.status === 'PENDING');
+      const nextJob = jobsRef.current.find(j => j.source === 'AUTOMATION' && (j.status === 'PENDING' || j.status === 'FAILED'));
       if (!nextJob) {
-        if (!jobs.some(j => j.status === 'RUNNING')) {
+        if (!jobsRef.current.some(j => j.source === 'AUTOMATION' && j.status === 'RUNNING')) {
             setAutomationStatus('IDLE');
         }
         return;
@@ -333,10 +340,10 @@ const App: React.FC = () => {
         }
       };
 
-      updateJobState(nextJob.id, { status: 'RUNNING' });
+      updateJobState(nextJob.id, { status: 'RUNNING', error: undefined });
       
       try {
-        let currentJobState = jobs.find(j => j.id === nextJob.id)!;
+        let currentJobState = jobsRef.current.find(j => j.id === nextJob.id)!;
         let { rawOutlineText, hook, chaptersContent, outlines, refinedTitle, totalWords } = currentJobState;
 
         // Step 1: Generate Outline if missing
@@ -362,8 +369,10 @@ const App: React.FC = () => {
         }
         
         // Step 3: Generate Chapters if missing
-        const chaptersToWrite = outlines.filter(o => o.id > 0 && !chaptersContent[o.id]);
+        const currentChapters = jobsRef.current.find(j => j.id === nextJob.id)?.chaptersContent || [];
+        const chaptersToWrite = outlines.filter(o => o.id > 0 && !currentChapters[o.id]);
         const batchSize = 3;
+
         for (let i = 0; i < chaptersToWrite.length; i += batchSize) {
           if (isCancelled) return;
           await checkStatus();
@@ -373,8 +382,7 @@ const App: React.FC = () => {
           
           const contentArray = await generateChapterBatch(rawOutlineText, batch);
 
-          // Refresh job state before updating to avoid race conditions
-          const latestJob = jobs.find(j => j.id === nextJob.id)!;
+          const latestJob = jobsRef.current.find(j => j.id === nextJob.id)!;
           const newContent = [...(latestJob.chaptersContent || [])];
           let totalWritten = countWords(latestJob.hook);
 
@@ -390,17 +398,12 @@ const App: React.FC = () => {
         
         updateJobState(nextJob.id, { status: 'DONE', currentTask: 'Completed!' });
 
-        // Wait 3 minutes before processing the next one
-        if (jobs.some(j => j.id !== nextJob.id && j.status === 'PENDING')) {
-            await new Promise(resolve => setTimeout(resolve, 180000));
-        }
-
       } catch (e) {
         const errorMessage = e instanceof Error ? e.message : "An unknown error occurred.";
         updateJobState(nextJob.id, { status: 'FAILED', error: errorMessage, currentTask: 'Error!' });
       } finally {
         if (!isCancelled) {
-          processQueue(); // Look for the next job
+          processQueue();
         }
       }
     };
@@ -408,7 +411,7 @@ const App: React.FC = () => {
     processQueue();
 
     return () => { isCancelled = true };
-  }, [automationStatus, jobs, setJobs, parseOutlineResponse]);
+  }, [automationStatus, parseOutlineResponse]);
 
 
   const getStatusBadge = (status: AutomationJobStatus) => {
@@ -461,6 +464,9 @@ const App: React.FC = () => {
     return <PasswordProtection onAuthenticate={handleAuthentication} />;
   }
 
+  const automationJobs = jobs.filter(j => j.source === 'AUTOMATION');
+  const libraryJobs = [...jobs].filter(j => j.status === 'DONE').sort((a, b) => b.createdAt - a.createdAt);
+
   return (
     <div className="min-h-screen bg-gray-950 text-gray-200 font-sans">
       <ApiKeyManager
@@ -486,17 +492,19 @@ const App: React.FC = () => {
            </button>
         </header>
 
-        <nav className="flex justify-center items-center gap-2 mb-8 p-2 bg-gray-800 rounded-lg">
-            {(['MANUAL', 'AUTOMATION', 'LIBRARY'] as AppView[]).map(v => (
-                <button 
-                    key={v}
-                    onClick={() => { setView(v); setSelectedJobToView(null); }}
-                    className={`px-4 py-2 text-sm font-semibold rounded-md transition-colors duration-200 w-full ${view === v ? 'bg-indigo-600 text-white' : 'bg-gray-700 hover:bg-gray-600'}`}
-                >
-                    {v.charAt(0) + v.slice(1).toLowerCase()}
-                </button>
-            ))}
-        </nav>
+        {!selectedJobToView && (
+            <nav className="flex justify-center items-center gap-2 mb-8 p-2 bg-gray-800 rounded-lg">
+                {(['MANUAL', 'AUTOMATION', 'LIBRARY'] as AppView[]).map(v => (
+                    <button 
+                        key={v}
+                        onClick={() => { setView(v); setSelectedJobToView(null); }}
+                        className={`px-4 py-2 text-sm font-semibold rounded-md transition-colors duration-200 w-full ${view === v ? 'bg-indigo-600 text-white' : 'bg-gray-700 hover:bg-gray-600'}`}
+                    >
+                        {v.charAt(0) + v.slice(1).toLowerCase()}
+                    </button>
+                ))}
+            </nav>
+        )}
 
         {error && (
             <div className="bg-red-900 border border-red-700 text-red-200 px-4 py-3 rounded-lg relative mb-6" role="alert">
@@ -508,116 +516,124 @@ const App: React.FC = () => {
             </div>
         )}
         
-        <div className="bg-gray-800/50 p-6 rounded-lg shadow-lg mb-8">
-          {view === 'MANUAL' && (
-            <div>
-              <h2 className="text-2xl font-bold mb-4 text-indigo-400">Manual Script Generator</h2>
-              <div className="space-y-4">
-                  <input type="text" value={manualTitle} onChange={e => setManualTitle(e.target.value)} placeholder="Video Title" className="w-full bg-gray-700 border border-gray-600 rounded-md p-3 focus:ring-2 focus:ring-indigo-500 focus:outline-none" />
-                  <textarea value={manualConcept} onChange={e => setManualConcept(e.target.value)} placeholder="Story Concept / Summary" rows={4} className="w-full bg-gray-700 border border-gray-600 rounded-md p-3 focus:ring-2 focus:ring-indigo-500 focus:outline-none"></textarea>
-                  <div className="flex items-center gap-4">
-                    <label htmlFor="duration" className="font-medium">Video Duration (mins):</label>
-                    <input type="number" id="duration" value={manualDuration} onChange={e => setManualDuration(Number(e.target.value))} className="w-24 bg-gray-700 border border-gray-600 rounded-md p-2 focus:ring-2 focus:ring-indigo-500 focus:outline-none" />
-                  </div>
-                  <Button onClick={handleGenerateFullScript} disabled={isGenerating}>
-                    {isGenerating ? 'Generating...' : 'Generate Full Script'}
-                  </Button>
-              </div>
-            </div>
-          )}
-
-          {view === 'AUTOMATION' && (
-            <div>
-              <h2 className="text-2xl font-bold mb-4 text-indigo-400">Setup Automation</h2>
-              <div className="space-y-4 p-4 border border-gray-700 rounded-lg mb-6">
-                  <input type="text" value={automationTitle} onChange={e => setAutomationTitle(e.target.value)} placeholder="Video Title" className="w-full bg-gray-700 border border-gray-600 rounded-md p-3 focus:ring-2 focus:ring-indigo-500 focus:outline-none" />
-                  <textarea value={automationConcept} onChange={e => setAutomationConcept(e.target.value)} placeholder="Story Concept / Summary" rows={4} className="w-full bg-gray-700 border border-gray-600 rounded-md p-3 focus:ring-2 focus:ring-indigo-500 focus:outline-none"></textarea>
-                  <div className="flex items-center gap-4">
-                    <label htmlFor="auto_duration" className="font-medium">Video Duration (mins):</label>
-                    <input type="number" id="auto_duration" value={automationDuration} onChange={e => setAutomationDuration(Number(e.target.value))} className="w-24 bg-gray-700 border border-gray-600 rounded-md p-2 focus:ring-2 focus:ring-indigo-500 focus:outline-none" />
-                  </div>
-                  <Button onClick={handleAddToQueue}>Add to Queue</Button>
-              </div>
-              <div className="flex justify-between items-center mb-4">
-                <h3 className="text-xl font-bold">Automation Queue ({jobs.filter(j => j.status === 'PENDING').length} pending)</h3>
-                <div className="flex gap-2">
-                    {automationStatus === 'IDLE' && <Button onClick={() => handleAutomationControl('RUN')} disabled={!jobs.some(j => j.status === 'PENDING' || j.status === 'FAILED')}>Run Automation</Button>}
-                    {automationStatus === 'RUNNING' && <Button onClick={() => handleAutomationControl('PAUSE')} variant="secondary">Pause Automation</Button>}
-                    {automationStatus === 'PAUSED' && <Button onClick={() => handleAutomationControl('RUN')}>Resume Automation</Button>}
-                    {automationStatus !== 'IDLE' && <Button onClick={() => handleAutomationControl('STOP')} className="bg-red-800 hover:bg-red-700 focus:ring-red-600">Stop Automation</Button>}
+        {!selectedJobToView ? (
+          <div className="bg-gray-800/50 p-6 rounded-lg shadow-lg mb-8">
+            {view === 'MANUAL' && (
+              <div>
+                <h2 className="text-2xl font-bold mb-4 text-indigo-400">Manual Script Generator</h2>
+                <div className="space-y-4">
+                    <input type="text" value={manualTitle} onChange={e => setManualTitle(e.target.value)} placeholder="Video Title" className="w-full bg-gray-700 border border-gray-600 rounded-md p-3 focus:ring-2 focus:ring-indigo-500 focus:outline-none" />
+                    <textarea value={manualConcept} onChange={e => setManualConcept(e.target.value)} placeholder="Story Concept / Summary" rows={4} className="w-full bg-gray-700 border border-gray-600 rounded-md p-3 focus:ring-2 focus:ring-indigo-500 focus:outline-none"></textarea>
+                    <div className="flex items-center gap-4">
+                      <label htmlFor="duration" className="font-medium">Video Duration (mins):</label>
+                      <input type="number" id="duration" value={manualDuration} onChange={e => setManualDuration(Number(e.target.value))} className="w-24 bg-gray-700 border border-gray-600 rounded-md p-2 focus:ring-2 focus:ring-indigo-500 focus:outline-none" />
+                    </div>
+                    <Button onClick={handleGenerateFullScript} disabled={isGenerating}>
+                      {isGenerating ? 'Generating...' : 'Generate Full Script'}
+                    </Button>
                 </div>
               </div>
-              <ul className="space-y-3">
-                {jobs.map(job => {
-                  const percentage = (job.totalWords && job.wordsWritten) ? Math.min(100, Math.round((job.wordsWritten / job.totalWords) * 100)) : 0;
-                  const etaSeconds = (job.status === 'RUNNING' && percentage > 0 && job.totalWords && job.wordsWritten) ? ((job.totalWords - job.wordsWritten) / (job.wordsWritten / 100)) / 10 : 0;
-                  return (
-                    <li key={job.id} className="bg-gray-700 p-3 rounded-md">
-                      <div className="flex justify-between items-start">
-                        <div className="flex-grow">
-                          <p className="font-semibold">{job.title}</p>
-                          <p className="text-sm text-gray-400">{job.status !== 'RUNNING' ? job.concept.substring(0, 50)+'...' : job.currentTask}</p>
-                          {job.status === 'FAILED' && <p className="text-xs text-red-400 mt-1">Error: {job.error}</p>}
+            )}
+
+            {view === 'AUTOMATION' && (
+              <div>
+                <h2 className="text-2xl font-bold mb-4 text-indigo-400">Setup Automation</h2>
+                <div className="space-y-4 p-4 border border-gray-700 rounded-lg mb-6">
+                    <input type="text" value={automationTitle} onChange={e => setAutomationTitle(e.target.value)} placeholder="Video Title" className="w-full bg-gray-700 border border-gray-600 rounded-md p-3 focus:ring-2 focus:ring-indigo-500 focus:outline-none" />
+                    <textarea value={automationConcept} onChange={e => setAutomationConcept(e.target.value)} placeholder="Story Concept / Summary" rows={4} className="w-full bg-gray-700 border border-gray-600 rounded-md p-3 focus:ring-2 focus:ring-indigo-500 focus:outline-none"></textarea>
+                    <div className="flex items-center gap-4">
+                      <label htmlFor="auto_duration" className="font-medium">Video Duration (mins):</label>
+                      <input type="number" id="auto_duration" value={automationDuration} onChange={e => setAutomationDuration(Number(e.target.value))} className="w-24 bg-gray-700 border border-gray-600 rounded-md p-2 focus:ring-2 focus:ring-indigo-500 focus:outline-none" />
+                    </div>
+                    <Button onClick={handleAddToQueue}>Add to Queue</Button>
+                </div>
+                <div className="flex justify-between items-center mb-4">
+                  <h3 className="text-xl font-bold">Automation Queue ({automationJobs.filter(j => j.status === 'PENDING' || j.status === 'FAILED').length} pending)</h3>
+                  <div className="flex gap-2">
+                      {automationStatus === 'IDLE' && <Button onClick={() => handleAutomationControl('RUN')} disabled={!automationJobs.some(j => j.status === 'PENDING' || j.status === 'FAILED')}>Run Automation</Button>}
+                      {automationStatus === 'RUNNING' && <Button onClick={() => handleAutomationControl('PAUSE')} variant="secondary">Pause Automation</Button>}
+                      {automationStatus === 'PAUSED' && <Button onClick={() => handleAutomationControl('RUN')}>Resume Automation</Button>}
+                      {automationStatus !== 'IDLE' && <Button onClick={() => handleAutomationControl('STOP')} className="bg-red-800 hover:bg-red-700 focus:ring-red-600">Stop Automation</Button>}
+                  </div>
+                </div>
+                <ul className="space-y-3">
+                  {automationJobs.map(job => {
+                    const percentage = (job.totalWords && job.wordsWritten) ? Math.min(100, Math.round((job.wordsWritten / job.totalWords) * 100)) : 0;
+                    return (
+                      <li key={job.id} onClick={() => setSelectedJobToView(job)} className="bg-gray-700 p-3 rounded-md cursor-pointer hover:bg-gray-600 transition-colors duration-200">
+                        <div className="flex justify-between items-start">
+                          <div className="flex-grow">
+                            <p className="font-semibold">{job.title}</p>
+                            <p className="text-sm text-gray-400">{job.status !== 'RUNNING' ? job.concept.substring(0, 50)+'...' : job.currentTask}</p>
+                            {job.status === 'FAILED' && <p className="text-xs text-red-400 mt-1">Error: {job.error}</p>}
+                          </div>
+                          <div className="flex items-center gap-2 flex-shrink-0 ml-4">
+                              {getStatusBadge(job.status)}
+                              {job.status === 'FAILED' && <Button onClick={(e) => { e.stopPropagation(); retryJob(job.id); }} variant="secondary" className="px-3 py-1 text-xs">Retry</Button>}
+                              <button onClick={(e) => { e.stopPropagation(); deleteJob(job.id); }} className="text-gray-400 hover:text-red-400 transition-colors text-xl font-bold">&times;</button>
+                          </div>
                         </div>
-                        <div className="flex items-center gap-2 flex-shrink-0 ml-4">
-                            {getStatusBadge(job.status)}
-                            {job.status === 'FAILED' && <Button onClick={() => retryJob(job.id)} variant="secondary" className="px-3 py-1 text-xs">Retry</Button>}
-                            <button onClick={() => deleteJob(job.id)} className="text-gray-400 hover:text-red-400 transition-colors text-xl font-bold">&times;</button>
-                        </div>
+                        {job.status === 'RUNNING' && (
+                          <div className="mt-2">
+                            <div className="flex justify-between items-baseline mb-1">
+                              <span className="text-xs font-medium text-gray-300">{job.wordsWritten || 0} / {job.totalWords || '?'} words</span>
+                            </div>
+                            <div className="w-full bg-gray-600 rounded-full h-2">
+                              <div className="bg-indigo-500 h-2 rounded-full transition-all duration-300" style={{ width: `${percentage}%` }}></div>
+                            </div>
+                          </div>
+                        )}
+                      </li>
+                    );
+                  })}
+                  {automationJobs.length === 0 && <p className="text-gray-400 text-center py-4">Queue is empty. Add a script to get started.</p>}
+                </ul>
+              </div>
+            )}
+
+            {view === 'LIBRARY' && (
+               <div>
+                <h2 className="text-2xl font-bold mb-4 text-indigo-400">Script Library</h2>
+                 <ul className="space-y-3">
+                  {libraryJobs.map(job => (
+                    <li key={job.id} onClick={() => setSelectedJobToView(job)} className={`bg-gray-700 p-4 rounded-md flex justify-between items-center cursor-pointer hover:bg-gray-600 transition-colors duration-200 ${selectedJobToView?.id === job.id ? 'ring-2 ring-indigo-500' : ''}`}>
+                      <div>
+                        <p className="font-semibold">{job.title}</p>
+                        <p className="text-sm text-gray-400">Created: {new Date(job.createdAt).toLocaleString()}</p>
                       </div>
-                       {job.status === 'RUNNING' && (
-                        <div className="mt-2">
-                          <div className="flex justify-between items-baseline mb-1">
-                            <span className="text-xs font-medium text-gray-300">{job.wordsWritten || 0} / {job.totalWords || '?'} words</span>
-                            {etaSeconds > 0 && <span className="text-xs font-medium text-gray-400">ETA: {Math.floor(etaSeconds / 60)}m {Math.round(etaSeconds % 60)}s</span>}
-                          </div>
-                          <div className="w-full bg-gray-600 rounded-full h-2">
-                            <div className="bg-indigo-500 h-2 rounded-full transition-all duration-300" style={{ width: `${percentage}%` }}></div>
-                          </div>
-                        </div>
-                      )}
+                      <div className="flex items-center gap-3">
+                        {getStatusBadge(job.status)}
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            deleteJob(job.id);
+                          }}
+                          className="text-gray-400 hover:text-red-400 transition-colors text-2xl font-bold leading-none"
+                          aria-label={`Delete script: ${job.title}`}
+                        >
+                          &times;
+                        </button>
+                      </div>
                     </li>
-                  );
-                })}
-                {jobs.length === 0 && <p className="text-gray-400 text-center py-4">Queue is empty. Add a script to get started.</p>}
-              </ul>
-            </div>
-          )}
+                  ))}
+                  {libraryJobs.length === 0 && <p className="text-gray-400 text-center py-4">No completed scripts found.</p>}
+                </ul>
+              </div>
+            )}
+          </div>
+        ) : null}
 
-          {view === 'LIBRARY' && (
-             <div>
-              <h2 className="text-2xl font-bold mb-4 text-indigo-400">Script Library</h2>
-               <ul className="space-y-3">
-                {[...jobs].sort((a,b) => b.createdAt - a.createdAt).map(job => (
-                  <li key={job.id} onClick={() => setSelectedJobToView(job)} className={`bg-gray-700 p-4 rounded-md flex justify-between items-center cursor-pointer hover:bg-gray-600 transition-colors duration-200 ${selectedJobToView?.id === job.id ? 'ring-2 ring-indigo-500' : ''}`}>
-                    <div>
-                      <p className="font-semibold">{job.refinedTitle || job.title}</p>
-                      <p className="text-sm text-gray-400">Created: {new Date(job.createdAt).toLocaleString()}</p>
-                    </div>
-                    <div className="flex items-center gap-3">
-                      {getStatusBadge(job.status)}
-                      <button
-                        onClick={(e) => {
-                          e.stopPropagation(); // Prevents li's onClick from firing
-                          deleteJob(job.id);
-                        }}
-                        className="text-gray-400 hover:text-red-400 transition-colors text-2xl font-bold leading-none"
-                        aria-label={`Delete script: ${job.title}`}
-                      >
-                        &times;
-                      </button>
-                    </div>
-                  </li>
-                ))}
-                {jobs.length === 0 && <p className="text-gray-400 text-center py-4">No scripts found. Generate a script or add one to the automation queue.</p>}
-              </ul>
-            </div>
-          )}
-        </div>
+        {(jobToDisplay && jobToDisplay.outlines) || (view === 'MANUAL' && manualScriptData.outlines) ? (
+          <div className="mt-2 animate-fade-in">
+            {selectedJobToView && (
+                <div className="mb-4">
+                    <Button onClick={() => setSelectedJobToView(null)} variant="secondary">
+                        &larr; Back to {selectedJobToView.source === 'AUTOMATION' ? 'Queue' : 'Library'}
+                    </Button>
+                </div>
+            )}
 
-        {jobToDisplay && jobToDisplay.outlines && jobToDisplay.outlines.length > 0 && (
-          <div className="mt-10 animate-fade-in">
-            <h2 className="text-3xl font-bold mb-4 text-center text-transparent bg-clip-text bg-gradient-to-r from-indigo-300 to-purple-400">{jobToDisplay.refinedTitle}</h2>
+            <h2 className="text-3xl font-bold mb-4 text-center text-transparent bg-clip-text bg-gradient-to-r from-indigo-300 to-purple-400">{jobToDisplay.refinedTitle || 'Generating Title...'}</h2>
             
             <p className="text-center text-gray-400 -mt-2 mb-4">Total Words: {progress.wordsWritten}</p>
 
@@ -635,19 +651,19 @@ const App: React.FC = () => {
                 {jobToDisplay.hook ? <p className="whitespace-pre-wrap font-serif text-lg leading-relaxed">{jobToDisplay.hook}</p> : <InlineLoader message="Generating hook..." />}
               </div>
 
-              {jobToDisplay.outlines.filter(o => o.id > 0).map(outline => (
+              {jobToDisplay.outlines?.filter(o => o.id > 0).map(outline => (
                 <div key={outline.id}>
                    <h3 className="text-xl font-semibold mb-3 border-b-2 border-indigo-500 pb-2">Chapter {outline.id}: {outline.title} <span className="text-sm text-gray-400 font-normal">({outline.wordCount} words)</span></h3>
                    {jobToDisplay.chaptersContent?.[outline.id] ? (
                      <p className="whitespace-pre-wrap font-serif text-lg leading-relaxed">{jobToDisplay.chaptersContent[outline.id]}</p>
                    ) : (
-                     <InlineLoader message={writingChapterIds.includes(outline.id) ? `Writing chapter ${outline.id}...` : 'Waiting to write...'} />
+                     <InlineLoader message={writingChapterIds.includes(outline.id) || jobToDisplay.currentTask?.includes(`Chapter ${outline.id}`) ? `Writing chapter ${outline.id}...` : 'Waiting to write...'} />
                    )}
                 </div>
               ))}
             </div>
           </div>
-        )}
+        ) : null}
       </main>
     </div>
   );
