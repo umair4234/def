@@ -258,8 +258,11 @@ const App: React.FC = () => {
   };
 
   const deleteJob = (jobId: string) => {
-    if (confirm('Are you sure you want to delete this job? This cannot be undone.')) {
+    if (confirm('Are you sure you want to delete this script? This cannot be undone.')) {
         setJobs(prev => prev.filter(j => j.id !== jobId));
+        if (selectedJobToView?.id === jobId) {
+          setSelectedJobToView(null);
+        }
     }
   }
 
@@ -559,7 +562,19 @@ const App: React.FC = () => {
                       <p className="font-semibold">{job.refinedTitle || job.title}</p>
                       <p className="text-sm text-gray-400">Created: {new Date(job.createdAt).toLocaleString()}</p>
                     </div>
-                    {getStatusBadge(job.status)}
+                    <div className="flex items-center gap-3">
+                      {getStatusBadge(job.status)}
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation(); // Prevents li's onClick from firing
+                          deleteJob(job.id);
+                        }}
+                        className="text-gray-400 hover:text-red-400 transition-colors text-2xl font-bold leading-none"
+                        aria-label={`Delete script: ${job.title}`}
+                      >
+                        &times;
+                      </button>
+                    </div>
                   </li>
                 ))}
                 {jobs.length === 0 && <p className="text-gray-400 text-center py-4">No scripts found. Generate a script or add one to the automation queue.</p>}
