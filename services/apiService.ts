@@ -21,10 +21,11 @@ export const callGeminiApi = async (
     }
 
     let keyIndex = getCurrentKeyIndex();
-    // Reset index if it's out of bounds (e.g., keys were removed)
     if (keyIndex >= apiKeys.length) {
         keyIndex = 0;
     }
+
+    let lastError: Error | null = null;
 
     // Try each key once, starting from the last known good index
     for (let i = 0; i < apiKeys.length; i++) {
@@ -32,16 +33,29 @@ export const callGeminiApi = async (
         try {
             const ai = new GoogleGenAI({ apiKey: currentKey });
             const response = await ai.models.generateContent(params);
-            // Success! Save the working key's index for the next call and return.
+            
+            // CRITICAL FIX: Access the .text property here to trigger any potential
+            // errors (like safety blocks) within this try/catch block.
+            const textContent = response.text;
+
+            // If we get here without an error, the call was successful.
             setCurrentKeyIndex(keyIndex);
             return response;
+
         } catch (error) {
             console.warn(`API key at index ${keyIndex} failed. Trying next key.`, error);
+            lastError = error as Error;
             // Rotate to the next key for the next attempt in this loop
             keyIndex = (keyIndex + 1) % apiKeys.length;
         }
     }
 
-    // If the loop completes, it means all keys failed.
-    throw new Error("All available API keys failed or have reached their rate limits. Please check your keys in the API Manager or add new ones.");
+    // If the loop completes, all keys failed. Throw the last captured error,
+    // as it's the most likely root cause (e.g., safety block, invalid prompt).
+    if (lastError) {
+        throw new Error(`All API keys failed. Last error: ${lastError.message}`);
+    }
+
+    // Fallback error, should be rare
+    throw new Error("All available API keys failed. Please check your keys in the API Manager or add new ones.");
 };
