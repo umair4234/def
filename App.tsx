@@ -1,4 +1,5 @@
 
+
 import React, { useState, useCallback, useRef, useMemo, useEffect } from 'react';
 import { ChapterOutline, AppStep, GenerationStatus, AppView, ScriptJob, AutomationJobStatus, LibraryStatus } from './types';
 import { generateOutlines, generateHook, generateChapterBatch } from './services/geminiService';
@@ -148,7 +149,74 @@ const App: React.FC = () => {
     isStoppedRef.current = false;
     isPausedRef.current = false;
   }
-  
+
+  // --- CENTRALIZED SCRIPT GENERATION LOGIC ---
+  const runGenerationProcess = async (
+    title: string, 
+    concept: string, 
+    duration: number, 
+    onProgress: (update: Partial<ScriptJob>) => void
+  ) => {
+    isStoppedRef.current = false;
+    isPausedRef.current = false;
+    setGenerationStatus(GenerationStatus.RUNNING);
+
+    try {
+      setCurrentTask('Generating story outline...');
+      const outlineText = await generateOutlines(title, concept, duration);
+      if (isStoppedRef.current) throw new Error("Stopped by user.");
+      
+      const { refinedTitle, outlines } = parseOutlineResponse(outlineText);
+      if (outlines.length === 0) throw new Error("Failed to generate a valid outline.");
+      
+      const initialData = { rawOutlineText: outlineText, refinedTitle, outlines, chaptersContent: new Array(outlines.length + 1).fill('') };
+      onProgress(initialData);
+
+      setCurrentTask('Crafting the perfect hook...');
+      const generatedHook = await generateHook(outlineText);
+      if (isStoppedRef.current) throw new Error("Stopped by user.");
+      onProgress({ hook: generatedHook });
+
+      const chaptersToWrite = outlines.filter(o => o.id > 0);
+      const batchSize = 3;
+
+      for (let i = 0; i < chaptersToWrite.length; i += batchSize) {
+        const batch = chaptersToWrite.slice(i, i + batchSize);
+        while (isPausedRef.current) await new Promise(resolve => setTimeout(resolve, 500));
+        if (isStoppedRef.current) throw new Error("Stopped by user.");
+
+        const chapterIds = batch.map(c => c.id);
+        setCurrentTask(`Writing Chapter${chapterIds.length > 1 ? 's' : ''} ${chapterIds.join(', ')}...`);
+        setWritingChapterIds(chapterIds);
+        
+        const contentArray = await generateChapterBatch(outlineText, batch);
+        if (isStoppedRef.current) { setWritingChapterIds([]); throw new Error("Stopped by user."); };
+
+        // FIX: The `onProgress` handler expects `chaptersContent` to be `string[]` based on `Partial<ScriptJob>`,
+        // but we are passing an updater function. Casting the function to `any` resolves the type mismatch.
+        // The state update logic is designed to handle this function correctly.
+        onProgress({
+          chaptersContent: ((currentContent: string[] | undefined) => {
+            const newContent = [...(currentContent || [])];
+            batch.forEach((chapter, index) => {
+                if (contentArray[index]) newContent[chapter.id] = contentArray[index];
+            });
+            return newContent;
+          }) as any
+        });
+
+        setWritingChapterIds([]);
+      }
+      setGenerationStatus(GenerationStatus.DONE);
+      setCurrentTask('Script generation complete!');
+
+    } catch (e) {
+      setGenerationStatus(GenerationStatus.IDLE);
+      setCurrentTask('Error!');
+      throw e; // Re-throw to be caught by the caller
+    }
+  };
+
   const handleGenerateFullScript = async () => {
      if (!manualTitle || !manualConcept) {
       setError("Please provide a title and concept.");
@@ -162,63 +230,35 @@ const App: React.FC = () => {
     setError(null);
     resetManualState();
     setSelectedJobToView(null);
-    setGenerationStatus(GenerationStatus.RUNNING);
+
+    const onManualProgress = (update: Partial<ScriptJob>) => {
+      setManualScriptData(prev => {
+        // FIX: This expression is not callable because TypeScript infers `update.chaptersContent`
+        // as `never` inside a `typeof... === 'function'` check, since its type is `string[] | undefined`.
+        // Casting to `any` allows the function call to proceed, which is correct at runtime.
+        const newChapters = typeof update.chaptersContent === 'function'
+          ? (update.chaptersContent as any)(prev.chaptersContent)
+          : update.chaptersContent;
+    
+        return {
+          ...prev,
+          ...update,
+          ...(newChapters && { chaptersContent: newChapters }),
+        };
+      });
+    };
 
     try {
-        setCurrentTask('Generating story outline...');
-        const outlineText = await generateOutlines(manualTitle, manualConcept, manualDuration);
-        if (isStoppedRef.current) return;
-        
-        const { refinedTitle, outlines } = parseOutlineResponse(outlineText);
-        if (outlines.length === 0) throw new Error("Failed to generate a valid outline.");
-        
-        const initialScriptData: Partial<ScriptJob> = { rawOutlineText: outlineText, refinedTitle, outlines, chaptersContent: new Array(outlines.length + 1).fill('')};
-        setManualScriptData(initialScriptData);
-        setManualStep(AppStep.OUTLINES_GENERATED);
-
-        setCurrentTask('Crafting the perfect hook...');
-        const generatedHook = await generateHook(outlineText);
-        if (isStoppedRef.current) return;
-
-        setManualScriptData(prev => ({...prev, hook: generatedHook}));
-        setManualStep(AppStep.HOOK_GENERATED);
-
-        const finalChaptersContent = new Array(outlines.length + 1).fill('');
-        const chaptersToWrite = outlines.filter(o => o.id > 0);
-        const batchSize = 3;
-
-        for (let i = 0; i < chaptersToWrite.length; i += batchSize) {
-            const batch = chaptersToWrite.slice(i, i + batchSize);
-            while (isPausedRef.current) await new Promise(resolve => setTimeout(resolve, 500));
-            if (isStoppedRef.current) return;
-
-            const chapterIds = batch.map(c => c.id);
-            setCurrentTask(`Writing Chapter${chapterIds.length > 1 ? 's' : ''} ${chapterIds.join(', ')}...`);
-            setWritingChapterIds(chapterIds);
-            
-            const contentArray = await generateChapterBatch(outlineText, batch);
-            
-            if (isStoppedRef.current) { setWritingChapterIds([]); return; };
-            
-            batch.forEach((chapter, index) => {
-                if (contentArray[index]) finalChaptersContent[chapter.id] = contentArray[index];
-            });
-
-            setManualScriptData(prev => {
-                const newContent = [...(prev.chaptersContent || [])];
-                batch.forEach((chapter, index) => {
-                    if (contentArray[index]) newContent[chapter.id] = contentArray[index];
-                });
-                return {...prev, chaptersContent: newContent};
-            });
-            setWritingChapterIds([]);
-        }
-        setGenerationStatus(GenerationStatus.DONE);
-        setCurrentTask('Script generation complete!');
-
+      await runGenerationProcess(manualTitle, manualConcept, manualDuration, onManualProgress);
+      
+      // Post-process after success
+      setManualStep(AppStep.HOOK_GENERATED); // To ensure UI shows results
+      
+      // Need to get the final state of manualScriptData
+      setManualScriptData(finalManualData => {
         const countWords = (str: string) => str?.split(/\s+/).filter(Boolean).length || 0;
-        const finalWordsWritten = countWords(generatedHook) + finalChaptersContent.reduce((sum, content) => sum + countWords(content), 0);
-        const targetTotalWords = outlines.filter(o => o.id > 0).reduce((sum, ch) => sum + ch.wordCount, 0) + 150;
+        const finalWordsWritten = countWords(finalManualData.hook || '') + (finalManualData.chaptersContent || []).reduce((sum, content) => sum + countWords(content), 0);
+        const targetTotalWords = (finalManualData.outlines || []).filter(o => o.id > 0).reduce((sum, ch) => sum + ch.wordCount, 0) + 150;
 
         const newJob: ScriptJob = {
           id: `job_${Date.now()}`,
@@ -228,23 +268,22 @@ const App: React.FC = () => {
           duration: manualDuration,
           status: 'DONE',
           createdAt: Date.now(),
-          rawOutlineText: outlineText,
-          refinedTitle: refinedTitle,
-          outlines: outlines,
-          hook: generatedHook,
-          chaptersContent: finalChaptersContent,
+          rawOutlineText: finalManualData.rawOutlineText || '',
+          refinedTitle: finalManualData.refinedTitle || '',
+          outlines: finalManualData.outlines || [],
+          hook: finalManualData.hook || '',
+          chaptersContent: finalManualData.chaptersContent || [],
           wordsWritten: finalWordsWritten,
           totalWords: targetTotalWords,
           currentTask: 'Completed!',
           libraryStatus: 'AVAILABLE',
         };
-
         setJobs(prev => [...prev, newJob]);
         setSelectedJobToView(newJob);
-
+        return finalManualData;
+      });
     } catch (e) {
       setError(e instanceof Error ? e.message : "An unknown error occurred during script generation.");
-      setGenerationStatus(GenerationStatus.IDLE);
     }
   }
 
@@ -293,8 +332,12 @@ const App: React.FC = () => {
         setError(null);
     } else if (control === 'PAUSE') {
         setAutomationStatus('PAUSED');
+        isPausedRef.current = true;
     } else if (control === 'STOP') {
         setAutomationStatus('IDLE');
+        isStoppedRef.current = true;
+        isPausedRef.current = false;
+        setGenerationStatus(GenerationStatus.IDLE);
         setJobs(prev => prev.map(j => j.status === 'RUNNING' ? {...j, status: 'FAILED', error: 'Stopped by user.', currentTask: 'Stopped'} : j));
     }
   };
@@ -320,110 +363,100 @@ const App: React.FC = () => {
   const retryJob = (jobId: string) => {
     setJobs(prev => prev.map(j => j.id === jobId ? {...j, status: 'PENDING', error: undefined } : j));
   }
-
+  
+  // New Automation Controller
   useEffect(() => {
     if (automationStatus !== 'RUNNING') return;
 
     let isCancelled = false;
-    const countWords = (str: string) => str?.split(/\s+/).filter(Boolean).length || 0;
 
-    const processQueue = async () => {
-      if (isCancelled) return;
-      
-      const nextJob = jobsRef.current.find(j => j.source === 'AUTOMATION' && (j.status === 'PENDING' || j.status === 'FAILED'));
-      if (!nextJob) {
-        if (!jobsRef.current.some(j => j.source === 'AUTOMATION' && j.status === 'RUNNING')) {
-            setAutomationStatus('IDLE');
+    const startAutomationQueue = async () => {
+      while (!isCancelled) {
+        // Find the next job that needs processing
+        const nextJob = jobsRef.current.find(j => j.source === 'AUTOMATION' && (j.status === 'PENDING' || j.status === 'FAILED'));
+
+        if (!nextJob) {
+          console.log("Automation queue finished.");
+          setAutomationStatus('IDLE');
+          break;
         }
-        return;
-      }
-      
-      const updateJobState = (jobId: string, updates: Partial<ScriptJob>) => {
-        setJobs(prev => prev.map(j => j.id === jobId ? { ...j, ...updates } : j));
-      };
 
-      const checkStatus = async () => {
+        // Handle pause state
         while (automationStatusRef.current === 'PAUSED') {
-            updateJobState(nextJob.id, { currentTask: 'Automation Paused...' });
-            await new Promise(resolve => setTimeout(resolve, 1000));
+          setJobs(prev => prev.map(j => j.id === nextJob.id ? { ...j, currentTask: 'Automation Paused...' } : j));
+          await new Promise(resolve => setTimeout(resolve, 1000));
         }
+
+        // Handle stop state
         if (automationStatusRef.current === 'IDLE') {
-            throw new Error('Automation stopped by user.');
-        }
-      };
-
-      updateJobState(nextJob.id, { status: 'RUNNING', error: undefined });
-      
-      try {
-        let currentJobState = jobsRef.current.find(j => j.id === nextJob.id)!;
-        let { rawOutlineText, hook, chaptersContent, outlines, refinedTitle, totalWords } = currentJobState;
-
-        // Step 1: Generate Outline if missing
-        if (!rawOutlineText) {
-            updateJobState(nextJob.id, { currentTask: 'Generating story outline...' });
-            await checkStatus();
-            rawOutlineText = await generateOutlines(nextJob.title, nextJob.concept, nextJob.duration);
-            const parsed = parseOutlineResponse(rawOutlineText);
-            outlines = parsed.outlines;
-            refinedTitle = parsed.refinedTitle;
-            if (outlines.length === 0) throw new Error("Failed to generate a valid outline.");
-            totalWords = (outlines.filter(o => o.id > 0).reduce((sum, ch) => sum + ch.wordCount, 0)) + 150;
-            updateJobState(nextJob.id, { rawOutlineText, outlines, refinedTitle, totalWords, chaptersContent: new Array(outlines.length + 1).fill('') });
+          console.log("Automation stopped by user.");
+          break;
         }
         
-        // Step 2: Generate Hook if missing
-        if (!hook) {
-            updateJobState(nextJob.id, { currentTask: 'Crafting the perfect hook...' });
-            await checkStatus();
-            hook = await generateHook(rawOutlineText);
-            const hookWords = countWords(hook);
-            updateJobState(nextJob.id, { hook, wordsWritten: hookWords });
-        }
-        
-        // Step 3: Generate Chapters if missing
-        const currentChapters = jobsRef.current.find(j => j.id === nextJob.id)?.chaptersContent || [];
-        const chaptersToWrite = outlines.filter(o => o.id > 0 && !currentChapters[o.id]);
-        const batchSize = 3;
+        const updateJobState = (jobId: string, updates: Partial<ScriptJob> | ((prevJob: ScriptJob) => Partial<ScriptJob>)) => {
+            setJobs(prevJobs => prevJobs.map(j => {
+                if (j.id === jobId) {
+                    const finalUpdates = typeof updates === 'function' ? updates(j) : updates;
+                    return { ...j, ...finalUpdates };
+                }
+                return j;
+            }));
+        };
 
-        for (let i = 0; i < chaptersToWrite.length; i += batchSize) {
-          if (isCancelled) return;
-          await checkStatus();
-          const batch = chaptersToWrite.slice(i, i + batchSize);
-          const chapterIds = batch.map(c => c.id);
-          updateJobState(nextJob.id, { currentTask: `Writing Chapter${chapterIds.length > 1 ? 's' : ''} ${chapterIds.join(', ')}...` });
-          
-          const contentArray = await generateChapterBatch(rawOutlineText, batch);
+        const onJobProgress = (update: Partial<ScriptJob>) => {
+            updateJobState(nextJob.id, (prevJob) => {
+                // FIX: This expression is not callable because TypeScript infers `update.chaptersContent`
+                // as `never` inside a `typeof... === 'function'` check, since its type is `string[] | undefined`.
+                // Casting to `any` allows the function call to proceed, which is correct at runtime.
+                const newChapters = typeof update.chaptersContent === 'function'
+                    ? (update.chaptersContent as any)(prevJob.chaptersContent)
+                    : update.chaptersContent;
 
-          const latestJob = jobsRef.current.find(j => j.id === nextJob.id)!;
-          const newContent = [...(latestJob.chaptersContent || [])];
-          let totalWritten = countWords(latestJob.hook);
+                const newPartialJob: Partial<ScriptJob> = {
+                    ...update,
+                    ...(newChapters && { chaptersContent: newChapters }),
+                };
 
-          batch.forEach((chapter, index) => {
-            if (contentArray[index]) {
-                newContent[chapter.id] = contentArray[index];
+                const countWords = (str: string) => str?.split(/\s+/).filter(Boolean).length || 0;
+                const hookWords = countWords(newPartialJob.hook || prevJob.hook || '');
+                const chapterWords = (newPartialJob.chaptersContent || prevJob.chaptersContent || []).reduce((sum, content) => sum + countWords(content), 0);
+                
+                return { ...newPartialJob, wordsWritten: hookWords + chapterWords };
+            });
+        };
+
+        try {
+            updateJobState(nextJob.id, { status: 'RUNNING', error: undefined });
+            setSelectedJobToView(jobsRef.current.find(j => j.id === nextJob.id) || null);
+
+            await runGenerationProcess(nextJob.title, nextJob.concept, nextJob.duration, onJobProgress);
+
+            const finalWords = jobsRef.current.find(j => j.id === nextJob.id)?.wordsWritten || 0;
+            const outlines = jobsRef.current.find(j => j.id === nextJob.id)?.outlines || [];
+            const targetTotalWords = outlines.filter(o => o.id > 0).reduce((sum, ch) => sum + ch.wordCount, 0) + 150;
+            
+            updateJobState(nextJob.id, { status: 'DONE', currentTask: 'Completed!', libraryStatus: 'AVAILABLE', wordsWritten: finalWords, totalWords: targetTotalWords });
+
+            // Cooldown period
+            for (let i = 300; i > 0; i--) {
+                if (automationStatusRef.current !== 'RUNNING') break;
+                setCurrentTask(`Cooldown: Next job in ${i}s...`);
+                await new Promise(resolve => setTimeout(resolve, 1000));
             }
-          });
-          
-          newContent.forEach(c => totalWritten += countWords(c));
-          updateJobState(nextJob.id, { chaptersContent: newContent, wordsWritten: totalWritten });
-        }
-        
-        updateJobState(nextJob.id, { status: 'DONE', currentTask: 'Completed!', libraryStatus: 'AVAILABLE' });
+            if (automationStatusRef.current !== 'RUNNING') break;
 
-      } catch (e) {
-        const errorMessage = e instanceof Error ? e.message : "An unknown error occurred.";
-        updateJobState(nextJob.id, { status: 'FAILED', error: errorMessage, currentTask: 'Error!' });
-      } finally {
-        if (!isCancelled) {
-          processQueue();
+        } catch (error) {
+            const errorMessage = error instanceof Error ? error.message : "An unknown error occurred.";
+            updateJobState(nextJob.id, { status: 'FAILED', error: errorMessage, currentTask: 'Error!' });
+            // Don't cooldown after a failure, just move to the next.
         }
       }
     };
+    
+    startAutomationQueue();
 
-    processQueue();
-
-    return () => { isCancelled = true };
-  }, [automationStatus, parseOutlineResponse]);
+    return () => { isCancelled = true; };
+  }, [automationStatus]);
 
 
   const getStatusBadge = (status: AutomationJobStatus) => {
