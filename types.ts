@@ -23,6 +23,8 @@ export type AppView = 'MANUAL' | 'AUTOMATION' | 'LIBRARY';
 
 export type AutomationJobStatus = 'PENDING' | 'RUNNING' | 'DONE' | 'FAILED';
 
+export type LibraryStatus = 'AVAILABLE' | 'ARCHIVED';
+
 export interface ScriptJob {
   id: string;
   source: 'MANUAL' | 'AUTOMATION';
@@ -34,6 +36,7 @@ export interface ScriptJob {
   status: AutomationJobStatus;
   createdAt: number;
   error?: string;
+  libraryStatus?: LibraryStatus;
   // Generated Content
   rawOutlineText: string;
   refinedTitle: string;

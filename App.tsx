@@ -1,6 +1,6 @@
 
 import React, { useState, useCallback, useRef, useMemo, useEffect } from 'react';
-import { ChapterOutline, AppStep, GenerationStatus, AppView, ScriptJob, AutomationJobStatus } from './types';
+import { ChapterOutline, AppStep, GenerationStatus, AppView, ScriptJob, AutomationJobStatus, LibraryStatus } from './types';
 import { generateOutlines, generateHook, generateChapterBatch } from './services/geminiService';
 import Button from './components/Button';
 import InlineLoader from './components/InlineLoader';
@@ -56,6 +56,8 @@ const App: React.FC = () => {
   const [automationConcept, setAutomationConcept] = useState('');
   const [automationDuration, setAutomationDuration] = useState(40);
   const [selectedJobToView, setSelectedJobToView] = useState<ScriptJob | null>(null);
+  const [showArchived, setShowArchived] = useState(false);
+
 
   // --- Manual Generation State ---
   const [manualStep, setManualStep] = useState<AppStep>(AppStep.INITIAL);
@@ -234,6 +236,7 @@ const App: React.FC = () => {
           wordsWritten: finalWordsWritten,
           totalWords: targetTotalWords,
           currentTask: 'Completed!',
+          libraryStatus: 'AVAILABLE',
         };
 
         setJobs(prev => [...prev, newJob]);
@@ -304,6 +307,15 @@ const App: React.FC = () => {
         }
     }
   }
+  
+  const handleToggleArchiveStatus = (jobId: string) => {
+    setJobs(prev => prev.map(job => {
+        if (job.id === jobId) {
+            return { ...job, libraryStatus: job.libraryStatus === 'ARCHIVED' ? 'AVAILABLE' : 'ARCHIVED' };
+        }
+        return job;
+    }));
+  };
 
   const retryJob = (jobId: string) => {
     setJobs(prev => prev.map(j => j.id === jobId ? {...j, status: 'PENDING', error: undefined } : j));
@@ -396,7 +408,7 @@ const App: React.FC = () => {
           updateJobState(nextJob.id, { chaptersContent: newContent, wordsWritten: totalWritten });
         }
         
-        updateJobState(nextJob.id, { status: 'DONE', currentTask: 'Completed!' });
+        updateJobState(nextJob.id, { status: 'DONE', currentTask: 'Completed!', libraryStatus: 'AVAILABLE' });
 
       } catch (e) {
         const errorMessage = e instanceof Error ? e.message : "An unknown error occurred.";
@@ -465,7 +477,11 @@ const App: React.FC = () => {
   }
 
   const automationJobs = jobs.filter(j => j.source === 'AUTOMATION');
-  const libraryJobs = [...jobs].filter(j => j.status === 'DONE').sort((a, b) => b.createdAt - a.createdAt);
+  const libraryJobs = jobs
+    .filter(j => j.status === 'DONE')
+    .filter(j => showArchived ? j.libraryStatus === 'ARCHIVED' : j.libraryStatus !== 'ARCHIVED')
+    .sort((a, b) => b.createdAt - a.createdAt);
+
 
   return (
     <div className="min-h-screen bg-gray-950 text-gray-200 font-sans">
@@ -593,16 +609,30 @@ const App: React.FC = () => {
 
             {view === 'LIBRARY' && (
                <div>
-                <h2 className="text-2xl font-bold mb-4 text-indigo-400">Script Library</h2>
+                <div className="flex justify-between items-center mb-4">
+                    <h2 className="text-2xl font-bold text-indigo-400">Script Library</h2>
+                    <Button onClick={() => setShowArchived(prev => !prev)} variant="secondary">
+                        {showArchived ? 'View Available Scripts' : 'View Archived Scripts'}
+                    </Button>
+                </div>
                  <ul className="space-y-3">
                   {libraryJobs.map(job => (
-                    <li key={job.id} onClick={() => setSelectedJobToView(job)} className={`bg-gray-700 p-4 rounded-md flex justify-between items-center cursor-pointer hover:bg-gray-600 transition-colors duration-200 ${selectedJobToView?.id === job.id ? 'ring-2 ring-indigo-500' : ''}`}>
+                    <li key={job.id} onClick={() => setSelectedJobToView(job)} className="bg-gray-700 p-4 rounded-md flex justify-between items-center cursor-pointer hover:bg-gray-600 transition-colors duration-200">
                       <div>
                         <p className="font-semibold">{job.title}</p>
                         <p className="text-sm text-gray-400">Created: {new Date(job.createdAt).toLocaleString()}</p>
                       </div>
                       <div className="flex items-center gap-3">
-                        {getStatusBadge(job.status)}
+                        <Button
+                            onClick={(e) => {
+                                e.stopPropagation();
+                                handleToggleArchiveStatus(job.id);
+                            }}
+                            variant="secondary"
+                            className="px-3 py-1 text-xs"
+                        >
+                            {job.libraryStatus === 'ARCHIVED' ? 'Unarchive' : 'Archive'}
+                        </Button>
                         <button
                           onClick={(e) => {
                             e.stopPropagation();
@@ -616,7 +646,11 @@ const App: React.FC = () => {
                       </div>
                     </li>
                   ))}
-                  {libraryJobs.length === 0 && <p className="text-gray-400 text-center py-4">No completed scripts found.</p>}
+                  {libraryJobs.length === 0 && (
+                    <p className="text-gray-400 text-center py-4">
+                        {showArchived ? "No archived scripts found." : "No available scripts found."}
+                    </p>
+                  )}
                 </ul>
               </div>
             )}
