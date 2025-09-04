@@ -1,3 +1,4 @@
+
 import React, { useState, useCallback, useRef, useMemo, useEffect } from 'react';
 import { ChapterOutline, AppStep, GenerationStatus, AppView, ScriptJob, AutomationJobStatus } from './types';
 import { generateOutlines, generateHook, generateChapterBatch } from './services/geminiService';
@@ -175,8 +176,10 @@ const App: React.FC = () => {
         setManualScriptData(prev => ({...prev, hook: generatedHook}));
         setManualStep(AppStep.HOOK_GENERATED);
 
+        const finalChaptersContent = new Array(outlines.length + 1).fill('');
         const chaptersToWrite = outlines.filter(o => o.id > 0);
         const batchSize = 3;
+
         for (let i = 0; i < chaptersToWrite.length; i += batchSize) {
             const batch = chaptersToWrite.slice(i, i + batchSize);
             while (isPausedRef.current) await new Promise(resolve => setTimeout(resolve, 500));
@@ -189,6 +192,10 @@ const App: React.FC = () => {
             const contentArray = await generateChapterBatch(outlineText, batch);
             
             if (isStoppedRef.current) { setWritingChapterIds([]); return; };
+            
+            batch.forEach((chapter, index) => {
+                if (contentArray[index]) finalChaptersContent[chapter.id] = contentArray[index];
+            });
 
             setManualScriptData(prev => {
                 const newContent = [...(prev.chaptersContent || [])];
@@ -201,6 +208,31 @@ const App: React.FC = () => {
         }
         setGenerationStatus(GenerationStatus.DONE);
         setCurrentTask('Script generation complete!');
+
+        const countWords = (str: string) => str?.split(/\s+/).filter(Boolean).length || 0;
+        const finalWordsWritten = countWords(generatedHook) + finalChaptersContent.reduce((sum, content) => sum + countWords(content), 0);
+        const targetTotalWords = outlines.filter(o => o.id > 0).reduce((sum, ch) => sum + ch.wordCount, 0) + 150;
+
+        const newJob: ScriptJob = {
+          id: `job_${Date.now()}`,
+          title: manualTitle,
+          concept: manualConcept,
+          duration: manualDuration,
+          status: 'DONE',
+          createdAt: Date.now(),
+          rawOutlineText: outlineText,
+          refinedTitle: refinedTitle,
+          outlines: outlines,
+          hook: generatedHook,
+          chaptersContent: finalChaptersContent,
+          wordsWritten: finalWordsWritten,
+          totalWords: targetTotalWords,
+          currentTask: 'Completed!',
+        };
+
+        setJobs(prev => [...prev, newJob]);
+        setSelectedJobToView(newJob);
+
     } catch (e) {
       setError(e instanceof Error ? e.message : "An unknown error occurred during script generation.");
       setGenerationStatus(GenerationStatus.IDLE);
@@ -587,6 +619,8 @@ const App: React.FC = () => {
           <div className="mt-10 animate-fade-in">
             <h2 className="text-3xl font-bold mb-4 text-center text-transparent bg-clip-text bg-gradient-to-r from-indigo-300 to-purple-400">{jobToDisplay.refinedTitle}</h2>
             
+            <p className="text-center text-gray-400 -mt-2 mb-4">Total Words: {progress.wordsWritten}</p>
+
             <div className="sticky top-0 bg-gray-950/80 backdrop-blur-sm z-10 py-4 mb-4">
                 <div className="flex flex-wrap justify-center gap-3">
                     <Button onClick={handleCopyFullScript} disabled={!isScriptGenerated}>Copy Full Script</Button>

@@ -13,9 +13,10 @@ Now, follow these steps to build the outline:
 
 1. Refine the Title: Make the user's title more exciting, following the formula: [Villain's Action] — [Hero's Secret Power/Situation]! Keep it under 100 characters.
 
-2. Calculate and Distribute Word Count: The rule is: 1 minute of video = 150 words. For a ${duration} minute video, the total word count should be ${duration * 150}. Distribute this total across all chapters, following this specific rule:
-- Chapter 1 MUST have a word count between 400 and 500 words.
-- The remaining word count should be distributed among the other chapters, ensuring each is between 600 and 1200 words.
+2. Calculate and Distribute Word Count: The rule is: 1 minute of video = 150 words. For a ${duration} minute video, the total word count for the entire script should be approximately ${duration * 150} words. Distribute this total word count across all chapters following these critical rules:
+- Chapter 1 MUST have a word count between 400 and 500 words to establish the emotional core.
+- The Hook is separate and will be written later (assume around 150 words).
+- The remaining word count should be distributed intelligently among the other chapters (Chapter 2 onwards). The word count for these chapters can and should vary to best serve the story's pacing and narrative needs. The key is that the total sum of word counts for all chapters should equal the target total for the video.
 
 3. Create the Chapters: Build the story with 5-12 chapters, depending on what best serves the story for the given duration. For each chapter, give it a title, a word count, and a simple concept.
 
