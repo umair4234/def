@@ -48,7 +48,8 @@ const App: React.FC = () => {
 
   // --- Automation & Library State ---
   const [jobs, setJobs] = useLocalStorage<ScriptJob[]>('automation_jobs', []);
-  const [automationStatus, setAutomationStatus] = useState<'IDLE' | 'RUNNING'>('IDLE');
+  const [automationStatus, setAutomationStatus] = useState<'IDLE' | 'RUNNING' | 'PAUSED'>('IDLE');
+  const automationStatusRef = useRef(automationStatus);
   const [automationTitle, setAutomationTitle] = useState('');
   const [automationConcept, setAutomationConcept] = useState('');
   const [automationDuration, setAutomationDuration] = useState(40);
@@ -68,6 +69,10 @@ const App: React.FC = () => {
   const [progress, setProgress] = useState({ wordsWritten: 0, totalWords: 0 });
   const isStoppedRef = useRef(false);
   const isPausedRef = useRef(false);
+  
+  useEffect(() => {
+    automationStatusRef.current = automationStatus;
+  }, [automationStatus]);
   
   const jobToDisplay = selectedJobToView || manualScriptData;
 
@@ -221,6 +226,8 @@ const App: React.FC = () => {
       outlines: [],
       hook: '',
       chaptersContent: [],
+      wordsWritten: 0,
+      totalWords: 0,
     };
     setJobs(prev => [...prev, newJob]);
     setAutomationTitle('');
@@ -228,85 +235,144 @@ const App: React.FC = () => {
     setAutomationDuration(40);
   };
 
-  const handleRunAutomation = () => {
-    if (apiKeys.length === 0) {
-      setError("Cannot run automation. No Gemini API keys found.");
-      setIsApiManagerOpen(true);
-      return;
+  const handleAutomationControl = (control: 'RUN' | 'PAUSE' | 'STOP') => {
+    if (control === 'RUN') {
+        if (apiKeys.length === 0) {
+            setError("Cannot run automation. No Gemini API keys found.");
+            setIsApiManagerOpen(true);
+            return;
+        }
+        const hasPending = jobs.some(j => j.status === 'PENDING' || j.status === 'FAILED');
+        if (!hasPending) {
+            alert("No pending or failed jobs in the queue to run.");
+            return;
+        }
+        setAutomationStatus('RUNNING');
+        setError(null);
+    } else if (control === 'PAUSE') {
+        setAutomationStatus('PAUSED');
+    } else if (control === 'STOP') {
+        setAutomationStatus('IDLE');
+        setJobs(prev => prev.map(j => j.status === 'RUNNING' ? {...j, status: 'FAILED', error: 'Stopped by user.', currentTask: 'Stopped'} : j));
     }
-    const hasPending = jobs.some(j => j.status === 'PENDING');
-    if (!hasPending) {
-        alert("No pending jobs in the queue to run.");
-        return;
+  };
+
+  const deleteJob = (jobId: string) => {
+    if (confirm('Are you sure you want to delete this job? This cannot be undone.')) {
+        setJobs(prev => prev.filter(j => j.id !== jobId));
     }
-    setAutomationStatus('RUNNING');
-    setError(null);
+  }
+
+  const retryJob = (jobId: string) => {
+    setJobs(prev => prev.map(j => j.id === jobId ? {...j, status: 'PENDING', error: undefined } : j));
   }
 
   useEffect(() => {
     if (automationStatus !== 'RUNNING') return;
 
     let isCancelled = false;
+    const countWords = (str: string) => str?.split(/\s+/).filter(Boolean).length || 0;
+
     const processQueue = async () => {
+      if (isCancelled) return;
+      
       const nextJob = jobs.find(j => j.status === 'PENDING');
       if (!nextJob) {
-        setAutomationStatus('IDLE');
+        if (!jobs.some(j => j.status === 'RUNNING')) {
+            setAutomationStatus('IDLE');
+        }
         return;
       }
+      
+      const updateJobState = (jobId: string, updates: Partial<ScriptJob>) => {
+        setJobs(prev => prev.map(j => j.id === jobId ? { ...j, ...updates } : j));
+      };
 
-      setJobs(prev => prev.map(j => j.id === nextJob.id ? { ...j, status: 'RUNNING' } : j));
+      const checkStatus = async () => {
+        while (automationStatusRef.current === 'PAUSED') {
+            updateJobState(nextJob.id, { currentTask: 'Automation Paused...' });
+            await new Promise(resolve => setTimeout(resolve, 1000));
+        }
+        if (automationStatusRef.current === 'IDLE') {
+            throw new Error('Automation stopped by user.');
+        }
+      };
+
+      updateJobState(nextJob.id, { status: 'RUNNING' });
       
       try {
-        const outlineText = await generateOutlines(nextJob.title, nextJob.concept, nextJob.duration);
-        if (isCancelled) return;
-        const { refinedTitle, outlines } = parseOutlineResponse(outlineText);
-        if (outlines.length === 0) throw new Error("Failed to generate a valid outline.");
+        let currentJobState = jobs.find(j => j.id === nextJob.id)!;
+        let { rawOutlineText, hook, chaptersContent, outlines, refinedTitle, totalWords } = currentJobState;
 
-        const generatedHook = await generateHook(outlineText);
-        if (isCancelled) return;
+        // Step 1: Generate Outline if missing
+        if (!rawOutlineText) {
+            updateJobState(nextJob.id, { currentTask: 'Generating story outline...' });
+            await checkStatus();
+            rawOutlineText = await generateOutlines(nextJob.title, nextJob.concept, nextJob.duration);
+            const parsed = parseOutlineResponse(rawOutlineText);
+            outlines = parsed.outlines;
+            refinedTitle = parsed.refinedTitle;
+            if (outlines.length === 0) throw new Error("Failed to generate a valid outline.");
+            totalWords = (outlines.filter(o => o.id > 0).reduce((sum, ch) => sum + ch.wordCount, 0)) + 150;
+            updateJobState(nextJob.id, { rawOutlineText, outlines, refinedTitle, totalWords, chaptersContent: new Array(outlines.length + 1).fill('') });
+        }
         
-        let generatedChapters = new Array(outlines.length + 1).fill('');
-        const chaptersToWrite = outlines.filter(o => o.id > 0);
+        // Step 2: Generate Hook if missing
+        if (!hook) {
+            updateJobState(nextJob.id, { currentTask: 'Crafting the perfect hook...' });
+            await checkStatus();
+            hook = await generateHook(rawOutlineText);
+            const hookWords = countWords(hook);
+            updateJobState(nextJob.id, { hook, wordsWritten: hookWords });
+        }
+        
+        // Step 3: Generate Chapters if missing
+        const chaptersToWrite = outlines.filter(o => o.id > 0 && !chaptersContent[o.id]);
         const batchSize = 3;
         for (let i = 0; i < chaptersToWrite.length; i += batchSize) {
           if (isCancelled) return;
+          await checkStatus();
           const batch = chaptersToWrite.slice(i, i + batchSize);
-          const contentArray = await generateChapterBatch(outlineText, batch);
+          const chapterIds = batch.map(c => c.id);
+          updateJobState(nextJob.id, { currentTask: `Writing Chapter${chapterIds.length > 1 ? 's' : ''} ${chapterIds.join(', ')}...` });
+          
+          const contentArray = await generateChapterBatch(rawOutlineText, batch);
+
+          // Refresh job state before updating to avoid race conditions
+          const latestJob = jobs.find(j => j.id === nextJob.id)!;
+          const newContent = [...(latestJob.chaptersContent || [])];
+          let totalWritten = countWords(latestJob.hook);
+
           batch.forEach((chapter, index) => {
-            if (contentArray[index]) generatedChapters[chapter.id] = contentArray[index];
+            if (contentArray[index]) {
+                newContent[chapter.id] = contentArray[index];
+            }
           });
+          
+          newContent.forEach(c => totalWritten += countWords(c));
+          updateJobState(nextJob.id, { chaptersContent: newContent, wordsWritten: totalWritten });
         }
         
-        setJobs(prev => prev.map(j => j.id === nextJob.id ? { 
-            ...j, 
-            status: 'DONE',
-            rawOutlineText: outlineText,
-            refinedTitle,
-            outlines,
-            hook: generatedHook,
-            chaptersContent: generatedChapters
-        } : j));
+        updateJobState(nextJob.id, { status: 'DONE', currentTask: 'Completed!' });
 
+        // Wait 3 minutes before processing the next one
         if (jobs.some(j => j.id !== nextJob.id && j.status === 'PENDING')) {
-            await new Promise(resolve => setTimeout(resolve, 120000));
+            await new Promise(resolve => setTimeout(resolve, 180000));
         }
 
       } catch (e) {
         const errorMessage = e instanceof Error ? e.message : "An unknown error occurred.";
-        setJobs(prev => prev.map(j => j.id === nextJob.id ? { ...j, status: 'FAILED', error: errorMessage } : j));
+        updateJobState(nextJob.id, { status: 'FAILED', error: errorMessage, currentTask: 'Error!' });
+      } finally {
+        if (!isCancelled) {
+          processQueue(); // Look for the next job
+        }
       }
     };
 
-    const interval = setInterval(() => {
-        if (jobs.find(j => j.status === 'PENDING')) {
-            processQueue();
-        } else {
-            setAutomationStatus('IDLE');
-            clearInterval(interval);
-        }
-    }, 1000);
+    processQueue();
 
-    return () => { isCancelled = true; clearInterval(interval) };
+    return () => { isCancelled = true };
   }, [automationStatus, jobs, setJobs, parseOutlineResponse]);
 
 
@@ -389,7 +455,7 @@ const App: React.FC = () => {
             {(['MANUAL', 'AUTOMATION', 'LIBRARY'] as AppView[]).map(v => (
                 <button 
                     key={v}
-                    onClick={() => setView(v)}
+                    onClick={() => { setView(v); setSelectedJobToView(null); }}
                     className={`px-4 py-2 text-sm font-semibold rounded-md transition-colors duration-200 w-full ${view === v ? 'bg-indigo-600 text-white' : 'bg-gray-700 hover:bg-gray-600'}`}
                 >
                     {v.charAt(0) + v.slice(1).toLowerCase()}
@@ -439,20 +505,45 @@ const App: React.FC = () => {
               </div>
               <div className="flex justify-between items-center mb-4">
                 <h3 className="text-xl font-bold">Automation Queue ({jobs.filter(j => j.status === 'PENDING').length} pending)</h3>
-                <Button onClick={handleRunAutomation} disabled={automationStatus === 'RUNNING' || !jobs.some(j=>j.status === 'PENDING')} variant="primary">
-                  {automationStatus === 'RUNNING' ? 'Automation Running...' : 'Run Automation'}
-                </Button>
+                <div className="flex gap-2">
+                    {automationStatus === 'IDLE' && <Button onClick={() => handleAutomationControl('RUN')} disabled={!jobs.some(j => j.status === 'PENDING' || j.status === 'FAILED')}>Run Automation</Button>}
+                    {automationStatus === 'RUNNING' && <Button onClick={() => handleAutomationControl('PAUSE')} variant="secondary">Pause Automation</Button>}
+                    {automationStatus === 'PAUSED' && <Button onClick={() => handleAutomationControl('RUN')}>Resume Automation</Button>}
+                    {automationStatus !== 'IDLE' && <Button onClick={() => handleAutomationControl('STOP')} className="bg-red-800 hover:bg-red-700 focus:ring-red-600">Stop Automation</Button>}
+                </div>
               </div>
               <ul className="space-y-3">
-                {jobs.map(job => (
-                  <li key={job.id} className="bg-gray-700 p-3 rounded-md flex justify-between items-center">
-                    <div>
-                      <p className="font-semibold">{job.title}</p>
-                      <p className="text-sm text-gray-400">{job.concept.substring(0, 50)}...</p>
-                    </div>
-                    {getStatusBadge(job.status)}
-                  </li>
-                ))}
+                {jobs.map(job => {
+                  const percentage = (job.totalWords && job.wordsWritten) ? Math.min(100, Math.round((job.wordsWritten / job.totalWords) * 100)) : 0;
+                  const etaSeconds = (job.status === 'RUNNING' && percentage > 0 && job.totalWords && job.wordsWritten) ? ((job.totalWords - job.wordsWritten) / (job.wordsWritten / 100)) / 10 : 0;
+                  return (
+                    <li key={job.id} className="bg-gray-700 p-3 rounded-md">
+                      <div className="flex justify-between items-start">
+                        <div className="flex-grow">
+                          <p className="font-semibold">{job.title}</p>
+                          <p className="text-sm text-gray-400">{job.status !== 'RUNNING' ? job.concept.substring(0, 50)+'...' : job.currentTask}</p>
+                          {job.status === 'FAILED' && <p className="text-xs text-red-400 mt-1">Error: {job.error}</p>}
+                        </div>
+                        <div className="flex items-center gap-2 flex-shrink-0 ml-4">
+                            {getStatusBadge(job.status)}
+                            {job.status === 'FAILED' && <Button onClick={() => retryJob(job.id)} variant="secondary" className="px-3 py-1 text-xs">Retry</Button>}
+                            <button onClick={() => deleteJob(job.id)} className="text-gray-400 hover:text-red-400 transition-colors text-xl font-bold">&times;</button>
+                        </div>
+                      </div>
+                       {job.status === 'RUNNING' && (
+                        <div className="mt-2">
+                          <div className="flex justify-between items-baseline mb-1">
+                            <span className="text-xs font-medium text-gray-300">{job.wordsWritten || 0} / {job.totalWords || '?'} words</span>
+                            {etaSeconds > 0 && <span className="text-xs font-medium text-gray-400">ETA: {Math.floor(etaSeconds / 60)}m {Math.round(etaSeconds % 60)}s</span>}
+                          </div>
+                          <div className="w-full bg-gray-600 rounded-full h-2">
+                            <div className="bg-indigo-500 h-2 rounded-full transition-all duration-300" style={{ width: `${percentage}%` }}></div>
+                          </div>
+                        </div>
+                      )}
+                    </li>
+                  );
+                })}
                 {jobs.length === 0 && <p className="text-gray-400 text-center py-4">Queue is empty. Add a script to get started.</p>}
               </ul>
             </div>

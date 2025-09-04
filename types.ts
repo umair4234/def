@@ -39,4 +39,8 @@ export interface ScriptJob {
   outlines: ChapterOutline[];
   hook: string;
   chaptersContent: string[];
+  // Progress Tracking
+  currentTask?: string;
+  wordsWritten?: number;
+  totalWords?: number;
 }
