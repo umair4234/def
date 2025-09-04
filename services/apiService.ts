@@ -1,6 +1,11 @@
 import { GoogleGenAI, GenerateContentParameters, GenerateContentResponse } from "@google/genai";
 
 const SESSION_KEY_INDEX = 'current_gemini_api_key_index';
+// The free tier for gemini-2.5-flash is 10 RPM. 60s / 10 = 6s per request.
+// We'll set it to 7 seconds to be safe and avoid hitting the limit.
+const MIN_DELAY_BETWEEN_CALLS_MS = 7000;
+let lastApiCallTimestamp = 0;
+
 
 const getCurrentKeyIndex = (): number => {
     const indexStr = sessionStorage.getItem(SESSION_KEY_INDEX);
@@ -19,6 +24,20 @@ export const callGeminiApi = async (
     if (apiKeys.length === 0) {
         throw new Error("No Gemini API keys found. Please add a key in the API Manager.");
     }
+
+    // --- Rate Limiting Logic ---
+    const now = Date.now();
+    const timeSinceLastCall = now - lastApiCallTimestamp;
+    
+    if (timeSinceLastCall < MIN_DELAY_BETWEEN_CALLS_MS) {
+        const waitTime = MIN_DELAY_BETWEEN_CALLS_MS - timeSinceLastCall;
+        console.log(`Rate limiting: waiting for ${waitTime}ms...`);
+        await new Promise(resolve => setTimeout(resolve, waitTime));
+    }
+    
+    // Update the timestamp right after waiting, before making the new call.
+    lastApiCallTimestamp = Date.now();
+    // --- End Rate Limiting Logic ---
 
     let keyIndex = getCurrentKeyIndex();
     if (keyIndex >= apiKeys.length) {
@@ -50,10 +69,19 @@ export const callGeminiApi = async (
         }
     }
 
-    // If the loop completes, all keys failed. Throw the last captured error,
-    // as it's the most likely root cause (e.g., safety block, invalid prompt).
+    // If the loop completes, all keys failed. Throw the last captured error.
     if (lastError) {
-        throw new Error(`All API keys failed. Last error: ${lastError.message}`);
+        let finalMessage = lastError.message;
+        try {
+            // Attempt to parse the error message as JSON to get a cleaner message.
+            const parsedError = JSON.parse(lastError.message);
+            if (parsedError?.error?.message) {
+                finalMessage = parsedError.error.message;
+            }
+        } catch (e) {
+            // Not a JSON error message, use it as is.
+        }
+        throw new Error(`All API keys failed. Last error: ${finalMessage}`);
     }
 
     // Fallback error, should be rare
