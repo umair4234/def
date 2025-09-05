@@ -446,7 +446,7 @@ const App: React.FC = () => {
         const ideas = await generateThumbnailIdeas(job.refinedTitle || job.title, job.hook);
         setThumbnailIdeas(ideas);
 
-        const updatedJobData = { thumbnailIdeas: ideas, thumbnailImageUrl: undefined }; // Reset image URL on re-analyze
+        const updatedJobData = { thumbnailIdeas: ideas, thumbnailImageUrls: [] }; // Reset images on re-analyze
         if (job.id) {
             updateJob(job.id, updatedJobData);
         } else {
@@ -460,11 +460,17 @@ const App: React.FC = () => {
     }
   };
   
-  const handleGenerateThumbnailImage = async (prompt: string, text: string) => {
+  const handleGenerateThumbnailImage = async (config: { prompt: string; text?: string; addText?: boolean; baseImage?: string }) => {
     setIsGeneratingThumbnailImage(true);
     try {
-        const imageUrl = await generateThumbnailImage(prompt, text);
-        const updatedJobData = { thumbnailImageUrl: imageUrl };
+        const { prompt, text = '', addText = false, baseImage } = config;
+        
+        const imageUrl = await generateThumbnailImage(prompt, text, addText, baseImage);
+        
+        const currentUrls = jobToDisplay?.thumbnailImageUrls || [];
+        const updatedUrls = [...currentUrls, imageUrl];
+        
+        const updatedJobData = { thumbnailImageUrls: updatedUrls };
 
         if (jobToDisplay?.id) {
             updateJob(jobToDisplay.id, updatedJobData);
@@ -797,7 +803,7 @@ const App: React.FC = () => {
         isLoadingImage={isGeneratingThumbnailImage}
         onReanalyze={() => handleGenerateThumbnailIdeas(jobToDisplay!, true)}
         onGenerateImage={handleGenerateThumbnailImage}
-        thumbnailImageUrl={jobToDisplay?.thumbnailImageUrl || null}
+        thumbnailImageUrls={jobToDisplay?.thumbnailImageUrls || null}
       />
     </div>
   );

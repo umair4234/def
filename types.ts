@@ -44,7 +44,7 @@ export interface ScriptJob {
   hook: string;
   chaptersContent: string[];
   thumbnailIdeas?: ThumbnailIdeas;
-  thumbnailImageUrl?: string;
+  thumbnailImageUrls?: string[];
   // Progress Tracking
   currentTask?: string;
   wordsWritten?: number;
