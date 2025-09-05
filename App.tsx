@@ -1,6 +1,6 @@
 import React, { useState, useCallback, useRef, useMemo, useEffect } from 'react';
 import { ChapterOutline, AppStep, GenerationStatus, AppView, ScriptJob, AutomationJobStatus, LibraryStatus, ThumbnailIdeas } from './types';
-import { generateOutlines, generateHook, generateChapterBatch, generateThumbnailIdeas } from './services/geminiService';
+import { generateOutlines, generateHook, generateChapterBatch, generateThumbnailIdeas, generateThumbnailImage } from './services/geminiService';
 import Button from './components/Button';
 import InlineLoader from './components/InlineLoader';
 import GenerationControls from './components/GenerationControls';
@@ -80,7 +80,9 @@ const App: React.FC = () => {
   // --- Thumbnail Generation State ---
   const [isThumbnailModalOpen, setIsThumbnailModalOpen] = useState(false);
   const [thumbnailIdeas, setThumbnailIdeas] = useState<ThumbnailIdeas | null>(null);
-  const [isGeneratingThumbnails, setIsGeneratingThumbnails] = useState(false);
+  const [isGeneratingThumbnailIdeas, setIsGeneratingThumbnailIdeas] = useState(false);
+  const [isGeneratingThumbnailImage, setIsGeneratingThumbnailImage] = useState(false);
+
 
   // --- UI State ---
   const [isOutlineCollapsed, setIsOutlineCollapsed] = useState(false);
@@ -429,7 +431,7 @@ const App: React.FC = () => {
   };
 
   const handleGenerateThumbnailIdeas = async (job: ScriptJob | Partial<ScriptJob>, force = false) => {
-    if (!job?.hook) return;
+    if (!job?.hook || !job.title) return;
 
     if (job.thumbnailIdeas && !force) {
         setThumbnailIdeas(job.thumbnailIdeas);
@@ -438,25 +440,45 @@ const App: React.FC = () => {
     }
 
     setIsThumbnailModalOpen(true);
-    setIsGeneratingThumbnails(true);
+    setIsGeneratingThumbnailIdeas(true);
     setThumbnailIdeas(null);
     try {
-        const ideas = await generateThumbnailIdeas(job.hook);
+        const ideas = await generateThumbnailIdeas(job.refinedTitle || job.title, job.hook);
         setThumbnailIdeas(ideas);
 
+        const updatedJobData = { thumbnailIdeas: ideas, thumbnailImageUrl: undefined }; // Reset image URL on re-analyze
         if (job.id) {
-            updateJob(job.id, { thumbnailIdeas: ideas });
+            updateJob(job.id, updatedJobData);
         } else {
-            setManualScriptData(prev => ({ ...prev, thumbnailIdeas: ideas }));
+            setManualScriptData(prev => ({ ...prev, ...updatedJobData }));
         }
     } catch (error) {
         console.error("Failed to generate thumbnail ideas:", error);
         setThumbnailIdeas(null);
     } finally {
-        setIsGeneratingThumbnails(false);
+        setIsGeneratingThumbnailIdeas(false);
     }
   };
   
+  const handleGenerateThumbnailImage = async (prompt: string, text: string) => {
+    setIsGeneratingThumbnailImage(true);
+    try {
+        const imageUrl = await generateThumbnailImage(prompt, text);
+        const updatedJobData = { thumbnailImageUrl: imageUrl };
+
+        if (jobToDisplay?.id) {
+            updateJob(jobToDisplay.id, updatedJobData);
+        } else {
+            setManualScriptData(prev => ({ ...prev, ...updatedJobData }));
+        }
+    } catch (error) {
+        console.error("Failed to generate thumbnail image:", error);
+        alert(`Failed to generate thumbnail image. Error: ${error instanceof Error ? error.message : String(error)}`);
+    } finally {
+        setIsGeneratingThumbnailImage(false);
+    }
+  };
+
   // --- UI Components ---
   const renderNav = () => (
     <nav className="flex items-center justify-between p-4 bg-gray-900 border-b border-gray-800">
@@ -491,10 +513,10 @@ const App: React.FC = () => {
         </div>
         <Button 
             onClick={() => handleGenerateThumbnailIdeas(job)} 
-            disabled={!job.hook || isGeneratingThumbnails}
+            disabled={!job.hook || isGeneratingThumbnailIdeas}
             variant="secondary"
         >
-            {isGeneratingThumbnails ? 'Generating...' : job.thumbnailIdeas ? '💡 View/Regenerate Ideas' : '💡 Generate Thumbnail Ideas'}
+            {isGeneratingThumbnailIdeas ? 'Generating...' : job.thumbnailIdeas ? '💡 View/Regenerate Ideas' : '💡 Generate Thumbnail Ideas'}
         </Button>
       </div>
       
@@ -770,9 +792,12 @@ const App: React.FC = () => {
       <ThumbnailIdeasModal
         isOpen={isThumbnailModalOpen}
         onClose={() => setIsThumbnailModalOpen(false)}
-        ideas={thumbnailIdeas}
-        isLoading={isGeneratingThumbnails}
+        ideas={jobToDisplay?.thumbnailIdeas || null}
+        isLoadingIdeas={isGeneratingThumbnailIdeas}
+        isLoadingImage={isGeneratingThumbnailImage}
         onReanalyze={() => handleGenerateThumbnailIdeas(jobToDisplay!, true)}
+        onGenerateImage={handleGenerateThumbnailImage}
+        thumbnailImageUrl={jobToDisplay?.thumbnailImageUrl || null}
       />
     </div>
   );

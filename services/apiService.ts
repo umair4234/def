@@ -1,5 +1,6 @@
 
-import { GoogleGenAI, GenerateContentParameters, GenerateContentResponse } from "@google/genai";
+
+import { GoogleGenAI, GenerateContentParameters, GenerateContentResponse, GenerateImagesParameters, GenerateImagesResponse } from "@google/genai";
 
 const SESSION_KEY_INDEX = 'current_gemini_api_key_index';
 // The free tier for gemini-2.5-flash is 10 RPM. 60s / 10 = 6s per request.
@@ -122,4 +123,68 @@ export const callGeminiApi = async (
 
     // Fallback error, should be rare
     throw new Error("All available API keys failed. Please check your keys in the API Manager or add new ones.");
+};
+
+export const callGeminiImagesApi = async (
+    params: Omit<GenerateImagesParameters, 'model'> & { model: string }
+): Promise<GenerateImagesResponse> => {
+    const apiKeys: string[] = JSON.parse(localStorage.getItem('gemini_api_keys') || '[]');
+    
+    if (apiKeys.length === 0) {
+        throw new Error("No Gemini API keys found. Please add a key in the API Manager.");
+    }
+
+    const now = Date.now();
+    const timeSinceLastCall = now - lastApiCallTimestamp;
+    
+    if (timeSinceLastCall < MIN_DELAY_BETWEEN_CALLS_MS) {
+        const waitTime = MIN_DELAY_BETWEEN_CALLS_MS - timeSinceLastCall;
+        console.log(`Rate limiting for images: waiting for ${waitTime}ms...`);
+        await new Promise(resolve => setTimeout(resolve, waitTime));
+    }
+    
+    lastApiCallTimestamp = Date.now();
+
+    let keyIndex = getCurrentKeyIndex();
+    if (keyIndex >= apiKeys.length) {
+        keyIndex = 0;
+    }
+
+    let lastError: Error | null = null;
+
+    for (let i = 0; i < apiKeys.length; i++) {
+        const currentKey = apiKeys[keyIndex];
+        try {
+            const ai = new GoogleGenAI({ apiKey: currentKey });
+            const response = await ai.models.generateImages(params);
+            
+            if (!response.generatedImages || response.generatedImages.length === 0) {
+                throw new Error("API returned success but no images were generated.");
+            }
+
+            setCurrentKeyIndex(keyIndex);
+            return response;
+
+        } catch (error) {
+            console.warn(`API key at index ${keyIndex} failed for image generation.`, error);
+            lastError = error as Error;
+            
+            keyIndex = (keyIndex + 1) % apiKeys.length;
+        }
+    }
+    
+    setCurrentKeyIndex(keyIndex);
+
+    if (lastError) {
+        let finalMessage = lastError.message;
+        try {
+            const parsedError = JSON.parse(lastError.message);
+            if (parsedError?.error?.message) {
+                finalMessage = parsedError.error.message;
+            }
+        } catch (e) { /* no-op */ }
+        throw new Error(`All API keys failed for image generation. Last error: ${finalMessage}`);
+    }
+
+    throw new Error("All available API keys failed for image generation. Please check your keys.");
 };

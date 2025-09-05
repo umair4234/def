@@ -115,30 +115,40 @@ ${chaptersTo_write.map(c => `
 `).join('\n')}
 `;
 
-export const THUMBNAIL_IDEAS_PROMPT_TEMPLATE = (hook: string) => `
-You are an expert viral YouTube thumbnail designer for the "first-person revenge story" genre. Your task is to generate a thumbnail concept based on the provided video hook.
-
-You have been trained on a comprehensive guide of successful thumbnails in this niche. You must use this knowledge to inform your response.
+export const THUMBNAIL_IDEAS_PROMPT_TEMPLATE = (title: string, hook: string) => `
+You are an expert viral YouTube thumbnail designer and prompt engineer for the "first-person revenge story" genre. Your task is to generate a thumbnail concept based on the provided video title and hook. You must generate two things: a detailed, ready-to-use image generation prompt, and the punchy text to overlay on the thumbnail.
 
 **CRITICAL KNOWLEDGE BASE (DO NOT DEVIATE FROM THIS STYLE):**
-
-*   **Emotional Intensity:** Thumbnails must feature exaggerated facial expressions – surprise, anger, shock, defiance. The goal is high drama.
-*   **Key Characters:**
-    *   The "Karen": An angry, often middle-aged woman, pointing or yelling.
-    *   The Protagonist(s): A relatable couple or individual, appearing defiant, surprised, or enacting revenge.
-    *   Police Officers: Often present, looking confused or surprised, setting up a "reveal."
-*   **The "Reveal" Element:** A core component. Hint at a secret identity, legal loophole, or unexpected profession (Lawyer, Judge, Navy Seal, Undercover Cop) that turns the tables.
-*   **Visual Cues of Conflict:** Pointing fingers, open mouths (yelling/gasping), police uniforms, damaged property.
-*   **Text Overlay Style:** Large, bold, all-caps, with a strong outline/drop shadow. The text must be a short, punchy phrase like a rhetorical question, direct accusation, exclamation, or snippet of dialogue.
-*   **Example Text Snippets:** "WANNA ATTACK ME NOW?!", "REAL COPS ARE COMING!", "SHE'S A JUDGE?!", "I AM THE POLICE!!", "YOU CRUSHED MY CAR?!", "I OWN IT NOW!".
-*   **Composition:** A central group of 2-4 key characters with a background providing context (suburban house, lake, etc.).
+- **Emotional Intensity:** Thumbnails must feature exaggerated facial expressions – surprise, anger, shock, defiance. The goal is high drama.
+- **Key Characters:** The "Karen" (angry, pointing), the Protagonist (calm, defiant, smirking), and Police Officers (bewildered, shocked).
+- **The "Reveal" Element:** The image must hint at a secret identity or a shocking turn of events, primarily through the police officers' confused reactions.
+- **Composition:** A central group of 2-4 key characters with a suburban background. The protagonist should be the focal point, often looking at the viewer.
+- **Text Overlay Style:** Large, bold, all-caps, with a strong outline/drop shadow. The text must be a short, punchy phrase that encapsulates the core conflict or reveal.
 
 **YOUR TASK:**
+Based on the video title and hook provided below, generate a thumbnail concept. Your response MUST be a JSON object with two keys: "image_generation_prompt" and "text_on_thumbnail".
 
-Based on the video hook provided below, generate a thumbnail concept. Your response MUST be a JSON object with two keys: "theme" and "text".
+**1. Create the \`image_generation_prompt\`:**
+Synthesize information from the title/hook to create a detailed prompt. Follow this structure precisely:
+- **Scene Setting:** Start with "A highly cinematic, vibrant, and dramatic suburban street scene at midday."
+- **Main Antagonist (The "Karen"):** Describe an "enraged middle-aged woman" in a "brightly colored power suit," who is "aggressively pointing and yelling."
+- **Protagonist(s):** Describe the protagonist (e.g., "a well-dressed male, late 30s") who "stands calmly with a slight, knowing smirk," and is "looking directly at the viewer." Their emotional state should be "calm," "defiant," or "unfazed."
+- **Police Officers (Key "Reveal" Element):** Include "two uniformed US police officers" who are "looking utterly bewildered and confused, their eyes wide with surprise," as if reacting to a shocking revelation about the protagonist.
+- **Conditional Logic (Analyze the hook for keywords):**
+    - If you see "Framed," "arrested," "handcuffs": Ensure one officer is holding handcuffs.
+    - If you see "Lawyer," "DA," "Judge," "Undercover": Emphasize the police's shocked expressions and the protagonist's calm confidence.
+    - If you see "HOA," "property," "deed": Ensure the suburban house/lawn is clearly visible and the conflict might be over a property feature.
+    - If you see "wife" or "husband": Include a couple as protagonists.
+- **Lighting and Style:** End the prompt with: "The lighting is high-contrast, with clear shadows. The background features a well-maintained, classic American suburban house. Shot with a wide-angle lens for dramatic effect, ensuring 16:9 aspect ratio, hyperrealistic, detailed faces, cinematic lighting, 8k."
 
-1.  **theme**: A short description of the visual theme. Mention the key characters, their expressions, the setting, and the central conflict.
-2.  **text**: The short, punchy, all-caps text to be overlaid on the thumbnail. This is the most important part. It must be designed to create maximum curiosity and emotion.
+**2. Create the \`text_on_thumbnail\`:**
+- Create a short, punchy, all-caps phrase (under 10 words) that captures the "reveal" moment.
+- Example formats: "SHE FRAMED ME. NOW I'M HER PROSECUTOR.", "YOU CALLED COPS ON A JUDGE?!", "SHE CALLED COPS. I CALLED MY LAWYER."
+
+**VIDEO TITLE:**
+---
+${title}
+---
 
 **VIDEO HOOK:**
 ---
