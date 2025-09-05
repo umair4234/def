@@ -114,3 +114,36 @@ ${chaptersTo_write.map(c => `
   Concept: ${c.concept}
 `).join('\n')}
 `;
+
+export const THUMBNAIL_IDEAS_PROMPT_TEMPLATE = (hook: string) => `
+You are an expert viral YouTube thumbnail designer for the "first-person revenge story" genre. Your task is to generate a thumbnail concept based on the provided video hook.
+
+You have been trained on a comprehensive guide of successful thumbnails in this niche. You must use this knowledge to inform your response.
+
+**CRITICAL KNOWLEDGE BASE (DO NOT DEVIATE FROM THIS STYLE):**
+
+*   **Emotional Intensity:** Thumbnails must feature exaggerated facial expressions – surprise, anger, shock, defiance. The goal is high drama.
+*   **Key Characters:**
+    *   The "Karen": An angry, often middle-aged woman, pointing or yelling.
+    *   The Protagonist(s): A relatable couple or individual, appearing defiant, surprised, or enacting revenge.
+    *   Police Officers: Often present, looking confused or surprised, setting up a "reveal."
+*   **The "Reveal" Element:** A core component. Hint at a secret identity, legal loophole, or unexpected profession (Lawyer, Judge, Navy Seal, Undercover Cop) that turns the tables.
+*   **Visual Cues of Conflict:** Pointing fingers, open mouths (yelling/gasping), police uniforms, damaged property.
+*   **Text Overlay Style:** Large, bold, all-caps, with a strong outline/drop shadow. The text must be a short, punchy phrase like a rhetorical question, direct accusation, exclamation, or snippet of dialogue.
+*   **Example Text Snippets:** "WANNA ATTACK ME NOW?!", "REAL COPS ARE COMING!", "SHE'S A JUDGE?!", "I AM THE POLICE!!", "YOU CRUSHED MY CAR?!", "I OWN IT NOW!".
+*   **Composition:** A central group of 2-4 key characters with a background providing context (suburban house, lake, etc.).
+
+**YOUR TASK:**
+
+Based on the video hook provided below, generate a thumbnail concept. Your response MUST be a JSON object with two keys: "theme" and "text".
+
+1.  **theme**: A short description of the visual theme. Mention the key characters, their expressions, the setting, and the central conflict.
+2.  **text**: The short, punchy, all-caps text to be overlaid on the thumbnail. This is the most important part. It must be designed to create maximum curiosity and emotion.
+
+**VIDEO HOOK:**
+---
+${hook}
+---
+
+Now, provide the JSON response.
+`;

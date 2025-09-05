@@ -1,5 +1,6 @@
-import { ChapterOutline } from "../types";
-import { OUTLINES_PROMPT_TEMPLATE, HOOK_PROMPT_TEMPLATE, CHAPTER_BATCH_PROMPT_TEMPLATE } from "../constants";
+import { Type } from "@google/genai";
+import { ChapterOutline, ThumbnailIdeas } from "../types";
+import { OUTLINES_PROMPT_TEMPLATE, HOOK_PROMPT_TEMPLATE, CHAPTER_BATCH_PROMPT_TEMPLATE, THUMBNAIL_IDEAS_PROMPT_TEMPLATE } from "../constants";
 import { callGeminiApi } from "./apiService";
 
 export const generateOutlines = async (title: string, concept: string, duration: number): Promise<string> => {
@@ -43,4 +44,37 @@ export const generateChapterBatch = async (
   }
   
   return chapterContents;
+};
+
+export const generateThumbnailIdeas = async (hook: string): Promise<ThumbnailIdeas> => {
+  const prompt = THUMBNAIL_IDEAS_PROMPT_TEMPLATE(hook);
+  const response = await callGeminiApi({
+    model: 'gemini-2.5-flash',
+    contents: prompt,
+    config: {
+      responseMimeType: "application/json",
+      responseSchema: {
+        type: Type.OBJECT,
+        properties: {
+          theme: {
+            type: Type.STRING,
+            description: "A short, descriptive theme for the thumbnail's visual style and content."
+          },
+          text: {
+            type: Type.STRING,
+            description: "The exact, punchy, all-caps text to overlay on the thumbnail."
+          }
+        }
+      }
+    }
+  });
+
+  try {
+    const jsonStr = response.text.trim();
+    const parsed = JSON.parse(jsonStr);
+    return parsed as ThumbnailIdeas;
+  } catch (error) {
+    console.error("Failed to parse thumbnail ideas JSON:", error);
+    throw new Error("Could not parse the thumbnail ideas from the AI response.");
+  }
 };

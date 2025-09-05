@@ -1,14 +1,15 @@
-
-
 import React, { useState, useCallback, useRef, useMemo, useEffect } from 'react';
-import { ChapterOutline, AppStep, GenerationStatus, AppView, ScriptJob, AutomationJobStatus, LibraryStatus } from './types';
-import { generateOutlines, generateHook, generateChapterBatch } from './services/geminiService';
+import { ChapterOutline, AppStep, GenerationStatus, AppView, ScriptJob, AutomationJobStatus, LibraryStatus, ThumbnailIdeas } from './types';
+import { generateOutlines, generateHook, generateChapterBatch, generateThumbnailIdeas } from './services/geminiService';
 import Button from './components/Button';
 import InlineLoader from './components/InlineLoader';
 import GenerationControls from './components/GenerationControls';
 import PasswordProtection from './components/PasswordProtection';
 import ApiKeyManager from './components/ApiKeyManager';
 import GearIcon from './components/GearIcon';
+import ThumbnailIdeasModal from './components/ThumbnailIdeasModal';
+import CopyControls from './components/CopyControls';
+import ManualProgressTracker from './components/ManualProgressTracker';
 
 // Custom hook for local storage persistence
 function useLocalStorage<T>(key: string, initialValue: T): [T, React.Dispatch<React.SetStateAction<T>>] {
@@ -42,7 +43,7 @@ const App: React.FC = () => {
   const [isAuthenticated, setIsAuthenticated] = useState(sessionStorage.getItem('isAuthenticated') === 'true');
 
   // --- Global State ---
-  const [view, setView] = useState<AppView>('AUTOMATION');
+  const [view, setView] = useState<AppView>('MANUAL');
   const [error, setError] = useState<string | null>(null);
   
   // --- API Key Management ---
@@ -76,6 +77,14 @@ const App: React.FC = () => {
   const isStoppedRef = useRef(false);
   const isPausedRef = useRef(false);
   
+  // --- Thumbnail Generation State ---
+  const [isThumbnailModalOpen, setIsThumbnailModalOpen] = useState(false);
+  const [thumbnailIdeas, setThumbnailIdeas] = useState<ThumbnailIdeas | null>(null);
+  const [isGeneratingThumbnails, setIsGeneratingThumbnails] = useState(false);
+
+  // --- UI State ---
+  const [isOutlineCollapsed, setIsOutlineCollapsed] = useState(false);
+
   useEffect(() => {
     automationStatusRef.current = automationStatus;
   }, [automationStatus]);
@@ -87,12 +96,26 @@ const App: React.FC = () => {
   const jobToDisplay = selectedJobToView || manualScriptData;
 
   const totalWords = useMemo(() => {
+    const countWords = (str: string) => str?.split(/\s+/).filter(Boolean).length || 0;
+    const hookWords = countWords(jobToDisplay?.hook || '');
+    const chapterWords = (jobToDisplay?.chaptersContent || []).reduce((sum, content) => sum + countWords(content), 0);
+    return hookWords + chapterWords;
+  }, [jobToDisplay]);
+
+  // Collapse outline once hook is generated, manage state when job changes
+  useEffect(() => {
+    setIsOutlineCollapsed(!!jobToDisplay?.hook);
+  }, [jobToDisplay]);
+
+  // This effect is for the progress bar total
+  const totalWordsForProgress = useMemo(() => {
     const outlines = jobToDisplay?.outlines || [];
     const chapterWords = outlines
         .filter(o => o.id > 0)
         .reduce((sum, ch) => sum + ch.wordCount, 0);
     return chapterWords > 0 ? chapterWords + 150 : 0;
-  }, [jobToDisplay]);
+  }, [jobToDisplay?.outlines]);
+
 
   useEffect(() => {
     const countWords = (str: string) => str?.split(/\s+/).filter(Boolean).length || 0;
@@ -102,9 +125,9 @@ const App: React.FC = () => {
     
     setProgress({
         wordsWritten: hookWords + chapterWords,
-        totalWords: totalWords,
+        totalWords: totalWordsForProgress,
     });
-  }, [jobToDisplay, totalWords]);
+  }, [jobToDisplay, totalWordsForProgress]);
 
   const handleAuthentication = (status: boolean) => {
     if (status) {
@@ -404,6 +427,35 @@ const App: React.FC = () => {
         }
       }
   };
+
+  const handleGenerateThumbnailIdeas = async (job: ScriptJob | Partial<ScriptJob>, force = false) => {
+    if (!job?.hook) return;
+
+    if (job.thumbnailIdeas && !force) {
+        setThumbnailIdeas(job.thumbnailIdeas);
+        setIsThumbnailModalOpen(true);
+        return;
+    }
+
+    setIsThumbnailModalOpen(true);
+    setIsGeneratingThumbnails(true);
+    setThumbnailIdeas(null);
+    try {
+        const ideas = await generateThumbnailIdeas(job.hook);
+        setThumbnailIdeas(ideas);
+
+        if (job.id) {
+            updateJob(job.id, { thumbnailIdeas: ideas });
+        } else {
+            setManualScriptData(prev => ({ ...prev, thumbnailIdeas: ideas }));
+        }
+    } catch (error) {
+        console.error("Failed to generate thumbnail ideas:", error);
+        setThumbnailIdeas(null);
+    } finally {
+        setIsGeneratingThumbnails(false);
+    }
+  };
   
   // --- UI Components ---
   const renderNav = () => (
@@ -432,48 +484,70 @@ const App: React.FC = () => {
 
   const renderScriptContent = (job: ScriptJob | Partial<ScriptJob>) => (
     <div className="space-y-6">
-      <div>
-        <h2 className="text-2xl font-bold text-indigo-400 mb-2">{job.refinedTitle || job.title}</h2>
-        <p className="text-gray-400 italic">{job.concept}</p>
+      <div className="flex justify-between items-start">
+        <div>
+          <h2 className="text-2xl font-bold text-indigo-400 mb-2">{job.refinedTitle || job.title}</h2>
+          <p className="text-gray-400 italic">{job.concept}</p>
+        </div>
+        <Button 
+            onClick={() => handleGenerateThumbnailIdeas(job)} 
+            disabled={!job.hook || isGeneratingThumbnails}
+            variant="secondary"
+        >
+            {isGeneratingThumbnails ? 'Generating...' : job.thumbnailIdeas ? '💡 View/Regenerate Ideas' : '💡 Generate Thumbnail Ideas'}
+        </Button>
       </div>
+      
+      <CopyControls job={job} totalWords={totalWords} />
 
-      {job.outlines && job.outlines.length > 0 && (
-          <div>
-              <h3 className="text-lg font-semibold text-gray-300 mb-2 border-b border-gray-700 pb-1">Outline</h3>
-              <ul className="space-y-2">
-                  {job.outlines.map(ch => (
-                      <li key={ch.id} className={`p-3 rounded-md transition-all duration-300 ${writingChapterIds.includes(ch.id) ? 'bg-indigo-900/50 animate-pulse' : 'bg-gray-800'}`}>
-                          <p className="font-semibold text-indigo-300">{`Chapter ${ch.id}: ${ch.title}`} <span className="text-xs text-gray-500 font-normal">{ch.id > 0 && `(${ch.wordCount} words)`}</span></p>
-                          <p className="text-sm text-gray-400 ml-4">{ch.concept}</p>
-                      </li>
-                  ))}
-              </ul>
-          </div>
-      )}
-
-      {job.hook && (
-        <div>
-            <h3 className="text-lg font-semibold text-gray-300 mb-2 border-b border-gray-700 pb-1">Hook</h3>
-            <p className="bg-gray-800 p-4 rounded-md whitespace-pre-wrap">{job.hook}</p>
-        </div>
-      )}
-
-      {job.chaptersContent && job.chaptersContent.length > 0 && (
-        <div>
-            <h3 className="text-lg font-semibold text-gray-300 mb-2 border-b border-gray-700 pb-1">Chapters</h3>
-            <div className="space-y-4">
-              {job.chaptersContent.map((content, index) => {
-                const chapterInfo = job.outlines?.find(o => o.id === index + 1);
-                return (
-                  <div key={index}>
-                    <h4 className="font-semibold text-indigo-300 mb-1">{`Chapter ${index + 1}: ${chapterInfo?.title || ''}`}</h4>
-                    <p className="bg-gray-800 p-4 rounded-md whitespace-pre-wrap">{content}</p>
-                  </div>
-                )
-              })}
+      <div className="border-t border-gray-800 pt-6 space-y-6">
+        {job.outlines && job.outlines.length > 0 && (
+            <div>
+                <button 
+                  onClick={() => setIsOutlineCollapsed(!isOutlineCollapsed)} 
+                  className="w-full flex justify-between items-center text-left text-lg font-semibold text-gray-300 mb-2 hover:text-indigo-400 transition-colors"
+                  aria-expanded={!isOutlineCollapsed}
+                >
+                  Outline
+                  <svg className={`w-5 h-5 transition-transform ${isOutlineCollapsed ? 'rotate-0' : 'rotate-180'}`} fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 9l-7 7-7-7"></path></svg>
+                </button>
+                {!isOutlineCollapsed && (
+                  <ul className="space-y-2 mt-3">
+                      {job.outlines.map(ch => (
+                          <li key={ch.id} className={`p-3 rounded-md transition-all duration-300 ${writingChapterIds.includes(ch.id) ? 'bg-indigo-900/50 animate-pulse' : 'bg-gray-800'}`}>
+                              <p className="font-semibold text-indigo-300">{`Chapter ${ch.id}: ${ch.title}`} <span className="text-xs text-gray-500 font-normal">{ch.id > 0 && `(${ch.wordCount} words)`}</span></p>
+                              <p className="text-sm text-gray-400 ml-4">{ch.concept}</p>
+                          </li>
+                      ))}
+                  </ul>
+                )}
             </div>
-        </div>
-      )}
+        )}
+
+        {job.hook && (
+          <div>
+              <h3 className="text-lg font-semibold text-gray-300 mb-2 border-b border-gray-700 pb-1">Hook</h3>
+              <p className="bg-gray-800 p-4 rounded-md whitespace-pre-wrap">{job.hook}</p>
+          </div>
+        )}
+
+        {job.chaptersContent && job.chaptersContent.length > 0 && (
+          <div>
+              <h3 className="text-lg font-semibold text-gray-300 mb-2 border-b border-gray-700 pb-1">Chapters</h3>
+              <div className="space-y-4">
+                {job.chaptersContent.map((content, index) => {
+                  const chapterInfo = job.outlines?.find(o => o.id === index + 1);
+                  return (
+                    <div key={index}>
+                      <h4 className="font-semibold text-indigo-300 mb-1">{`Chapter ${index + 1}: ${chapterInfo?.title || ''}`}</h4>
+                      <p className="bg-gray-800 p-4 rounded-md whitespace-pre-wrap">{content}</p>
+                    </div>
+                  )
+                })}
+              </div>
+          </div>
+        )}
+      </div>
     </div>
   );
 
@@ -607,22 +681,20 @@ const App: React.FC = () => {
               className="w-full bg-gray-800 border border-gray-700 rounded-md p-2 focus:ring-2 focus:ring-indigo-500 focus:outline-none disabled:opacity-50"
             />
           </div>
-          <div className="pt-2">
+          <div className="pt-6 flex flex-col items-center space-y-4">
             <Button
               onClick={handleManualOneClickGenerate}
               disabled={generationStatus !== GenerationStatus.IDLE || !manualTitle.trim() || !manualConcept.trim()}
-              className="w-full"
             >
               Generate Full Script
             </Button>
-             <Button
+            <button
                 onClick={resetManualState}
-                variant="secondary"
-                className="w-full mt-2"
+                className="text-gray-500 hover:text-gray-300 text-sm transition-colors disabled:opacity-50"
                 disabled={generationStatus !== GenerationStatus.IDLE && manualStep === AppStep.INITIAL}
             >
                 Reset
-            </Button>
+            </button>
           </div>
           {error && <p className="mt-4 text-red-400 text-sm">{error}</p>}
         </div>
@@ -636,11 +708,25 @@ const App: React.FC = () => {
           </div>
         )}
         {(manualStep > AppStep.INITIAL || generationStatus !== GenerationStatus.IDLE) && (
-            generationStatus === GenerationStatus.RUNNING && !manualScriptData.rawOutlineText ? (
-                <InlineLoader message={currentTask} />
+          <div>
+            {(generationStatus === GenerationStatus.RUNNING || generationStatus === GenerationStatus.PAUSED) && (
+              <ManualProgressTracker
+                outlines={manualScriptData.outlines || []}
+                currentTask={currentTask}
+                generationStatus={generationStatus}
+                hookGenerated={!!manualScriptData.hook}
+                chaptersGeneratedCount={manualScriptData.chaptersContent?.length || 0}
+              />
+            )}
+            
+            {manualScriptData.rawOutlineText ? (
+                <div className="mt-8">
+                  {renderScriptContent(manualScriptData)}
+                </div>
             ) : (
-                renderScriptContent(manualScriptData)
-            )
+                generationStatus === GenerationStatus.RUNNING && <InlineLoader message={currentTask} />
+            )}
+          </div>
         )}
       </div>
     </div>
@@ -680,6 +766,13 @@ const App: React.FC = () => {
         onClose={() => setIsApiManagerOpen(false)}
         apiKeys={apiKeys}
         setApiKeys={setApiKeys}
+      />
+      <ThumbnailIdeasModal
+        isOpen={isThumbnailModalOpen}
+        onClose={() => setIsThumbnailModalOpen(false)}
+        ideas={thumbnailIdeas}
+        isLoading={isGeneratingThumbnails}
+        onReanalyze={() => handleGenerateThumbnailIdeas(jobToDisplay!, true)}
       />
     </div>
   );

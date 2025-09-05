@@ -43,8 +43,14 @@ export interface ScriptJob {
   outlines: ChapterOutline[];
   hook: string;
   chaptersContent: string[];
+  thumbnailIdeas?: ThumbnailIdeas;
   // Progress Tracking
   currentTask?: string;
   wordsWritten?: number;
   totalWords?: number;
+}
+
+export interface ThumbnailIdeas {
+  theme: string;
+  text: string;
 }
