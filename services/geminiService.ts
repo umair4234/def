@@ -102,10 +102,7 @@ export const generateThumbnailImage = async (
 ): Promise<string> => {
   let fullPrompt = prompt;
 
-  if (baseImage) {
-    // For edits, the prompt is just the edit instruction.
-    fullPrompt = prompt;
-  } else if (addTextOverlay) {
+  if (!baseImage && addTextOverlay) {
     // For initial generation with text.
     fullPrompt = `${prompt}. The image MUST have the following text prominently displayed on it, in a large, bold, easy-to-read font, styled like a viral YouTube thumbnail: "${textOverlay}"`;
   }
@@ -118,7 +115,7 @@ export const generateThumbnailImage = async (
 
   const response = await callGeminiApi({
     model: 'gemini-2.5-flash-image-preview',
-    contents: { parts },
+    contents: [{ parts }],
     config: {
         responseModalities: [Modality.IMAGE, Modality.TEXT],
     },

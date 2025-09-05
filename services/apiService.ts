@@ -54,17 +54,20 @@ export const callGeminiApi = async (
             const ai = new GoogleGenAI({ apiKey: currentKey });
             const response = await ai.models.generateContent(params);
             
-            // CRITICAL: Access the .text property to trigger potential errors
-            // (like safety blocks) within this try/catch block.
-            // However, image models might not have .text, so check candidates
-            if (response.text === undefined && response.candidates === undefined) {
-              // This is likely an error response that needs to be thrown
-              // The SDK might hide the actual error in a complex object.
-              // We'll throw the raw response for inspection if lastError is not set.
+            // A successful response (even if blocked) should have candidates or promptFeedback.
+            // A totally empty response is an error.
+            // A successful image response will have candidates but might not have text.
+            if (response.candidates && response.candidates.length > 0) {
+                setCurrentKeyIndex(keyIndex);
+                return response;
             } else {
-               // If we get here without an error, the call was successful.
-               setCurrentKeyIndex(keyIndex);
-               return response;
+                // This response is not usable. Treat it as a failure for this key.
+                // Check for block reason to provide a better error.
+                const blockReason = response.promptFeedback?.blockReason;
+                if (blockReason) {
+                    throw new Error(`Request was blocked due to: ${blockReason}.`);
+                }
+                throw new Error("API returned an empty or invalid response.");
             }
 
         } catch (error) {
