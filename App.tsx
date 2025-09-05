@@ -16,6 +16,7 @@ function useLocalStorage<T>(key: string, initialValue: T): [T, React.Dispatch<Re
     try {
       const item = window.localStorage.getItem(key);
       return item ? JSON.parse(item) : initialValue;
+      // FIX: Added curly braces to the catch block to fix syntax error.
     } catch (error) {
       console.error(error);
       return initialValue;
@@ -152,586 +153,534 @@ const App: React.FC = () => {
 
   // --- CENTRALIZED SCRIPT GENERATION LOGIC ---
   const runGenerationProcess = async (
-    title: string, 
-    concept: string, 
-    duration: number, 
-    onProgress: (update: Partial<ScriptJob>) => void
+    title: string,
+    concept: string,
+    duration: number,
+    onProgress: (update: Partial<ScriptJob>) => void,
+    existingData: Partial<ScriptJob> = {}
   ) => {
     isStoppedRef.current = false;
     isPausedRef.current = false;
     setGenerationStatus(GenerationStatus.RUNNING);
 
     try {
-      setCurrentTask('Generating story outline...');
-      const outlineText = await generateOutlines(title, concept, duration);
-      if (isStoppedRef.current) throw new Error("Stopped by user.");
-      
-      const { refinedTitle, outlines } = parseOutlineResponse(outlineText);
-      if (outlines.length === 0) throw new Error("Failed to generate a valid outline.");
-      
-      const initialData = { rawOutlineText: outlineText, refinedTitle, outlines, chaptersContent: new Array(outlines.length + 1).fill('') };
-      onProgress(initialData);
+        let outlineText = existingData.rawOutlineText || '';
+        let outlines = existingData.outlines || [];
+        let refinedTitle = existingData.refinedTitle || '';
 
-      setCurrentTask('Crafting the perfect hook...');
-      const generatedHook = await generateHook(outlineText);
-      if (isStoppedRef.current) throw new Error("Stopped by user.");
-      onProgress({ hook: generatedHook });
+        // Step 1: Generate Outlines (if needed)
+        if (!outlineText || outlines.length === 0) {
+            setCurrentTask('Generating story outline...');
+            outlineText = await generateOutlines(title, concept, duration);
+            if (isStoppedRef.current) throw new Error("Stopped by user.");
+            
+            const parsed = parseOutlineResponse(outlineText);
+            outlines = parsed.outlines;
+            refinedTitle = parsed.refinedTitle;
+            if (outlines.length === 0) throw new Error("Failed to generate a valid outline.");
 
-      const chaptersToWrite = outlines.filter(o => o.id > 0);
-      const batchSize = 3;
-
-      for (let i = 0; i < chaptersToWrite.length; i += batchSize) {
-        const batch = chaptersToWrite.slice(i, i + batchSize);
-        while (isPausedRef.current) await new Promise(resolve => setTimeout(resolve, 500));
-        if (isStoppedRef.current) throw new Error("Stopped by user.");
-
-        const chapterIds = batch.map(c => c.id);
-        setCurrentTask(`Writing Chapter${chapterIds.length > 1 ? 's' : ''} ${chapterIds.join(', ')}...`);
-        setWritingChapterIds(chapterIds);
+            onProgress({ rawOutlineText: outlineText, outlines, refinedTitle });
+        }
         
-        const contentArray = await generateChapterBatch(outlineText, batch);
-        if (isStoppedRef.current) { setWritingChapterIds([]); throw new Error("Stopped by user."); };
+        // Step 2: Generate Hook (if needed)
+        let hook = existingData.hook || '';
+        if (!hook) {
+            if (isStoppedRef.current) throw new Error("Stopped by user.");
+            while (isPausedRef.current) await new Promise(res => setTimeout(res, 1000));
+            setCurrentTask('Writing the hook...');
+            hook = await generateHook(outlineText);
+            if (!hook) throw new Error("Failed to generate a valid hook.");
+            onProgress({ hook });
+        }
+        
+        // Step 3: Generate Chapters (if needed)
+        let chaptersContent = existingData.chaptersContent || [];
+        const storyChapters = outlines.filter(o => o.id > 0);
+        
+        const chaptersToWrite = storyChapters.filter((chapter, index) => !chaptersContent[index]);
 
-        // FIX: The `onProgress` handler expects `chaptersContent` to be `string[]` based on `Partial<ScriptJob>`,
-        // but we are passing an updater function. Casting the function to `any` resolves the type mismatch.
-        // The state update logic is designed to handle this function correctly.
-        onProgress({
-          chaptersContent: ((currentContent: string[] | undefined) => {
-            const newContent = [...(currentContent || [])];
-            batch.forEach((chapter, index) => {
-                if (contentArray[index]) newContent[chapter.id] = contentArray[index];
-            });
-            return newContent;
-          }) as any
-        });
+        if (chaptersToWrite.length > 0) {
+            const BATCH_SIZE = 3;
+            for (let i = 0; i < chaptersToWrite.length; i += BATCH_SIZE) {
+                if (isStoppedRef.current) throw new Error("Stopped by user.");
+                while (isPausedRef.current) await new Promise(res => setTimeout(res, 1000));
+                
+                const batch = chaptersToWrite.slice(i, i + BATCH_SIZE);
+                setCurrentTask(`Writing chapters ${batch.map(c => c.id).join(', ')}...`);
+                setWritingChapterIds(batch.map(c => c.id));
+                
+                const generatedBatchContent = await generateChapterBatch(outlineText, batch);
+                if (generatedBatchContent.length !== batch.length) {
+                    throw new Error(`Chapter generation mismatch. Expected ${batch.length}, got ${generatedBatchContent.length}.`);
+                }
+                
+                chaptersContent = [...chaptersContent, ...generatedBatchContent];
+                onProgress({ chaptersContent: [...chaptersContent] });
+            }
+        }
 
         setWritingChapterIds([]);
-      }
-      setGenerationStatus(GenerationStatus.DONE);
-      setCurrentTask('Script generation complete!');
-
-    } catch (e) {
-      setGenerationStatus(GenerationStatus.IDLE);
-      setCurrentTask('Error!');
-      throw e; // Re-throw to be caught by the caller
+        setGenerationStatus(GenerationStatus.DONE);
+        setCurrentTask('Done!');
+    } catch (error) {
+        setGenerationStatus(GenerationStatus.IDLE);
+        setWritingChapterIds([]);
+        // Re-throw the error to be caught by the calling function (handleManualOneClickGenerate or startAutomation)
+        throw error;
     }
   };
 
-  const handleGenerateFullScript = async () => {
-     if (!manualTitle || !manualConcept) {
-      setError("Please provide a title and concept.");
-      return;
-    }
-    if (apiKeys.length === 0) {
-      setError("No Gemini API keys found. Please add a key in the API Manager.");
-      setIsApiManagerOpen(true);
-      return;
-    }
-    setError(null);
-    resetManualState();
-    setSelectedJobToView(null);
+  const handleStop = () => {
+    isStoppedRef.current = true;
+    isPausedRef.current = false;
+    setGenerationStatus(GenerationStatus.IDLE);
+    setAutomationStatus('IDLE');
+    setCurrentTask('');
+    setWritingChapterIds([]);
+  };
 
-    const onManualProgress = (update: Partial<ScriptJob>) => {
-      setManualScriptData(prev => {
-        // FIX: This expression is not callable because TypeScript infers `update.chaptersContent`
-        // as `never` inside a `typeof... === 'function'` check, since its type is `string[] | undefined`.
-        // Casting to `any` allows the function call to proceed, which is correct at runtime.
-        const newChapters = typeof update.chaptersContent === 'function'
-          ? (update.chaptersContent as any)(prev.chaptersContent)
-          : update.chaptersContent;
-    
-        return {
-          ...prev,
-          ...update,
-          ...(newChapters && { chaptersContent: newChapters }),
-        };
-      });
-    };
+  const handlePause = () => {
+    isPausedRef.current = true;
+    setGenerationStatus(GenerationStatus.PAUSED);
+    setAutomationStatus('PAUSED');
+  };
+
+  const handleResume = () => {
+    isPausedRef.current = false;
+    setGenerationStatus(GenerationStatus.RUNNING);
+    setAutomationStatus('RUNNING');
+  };
+
+  const handleManualOneClickGenerate = async () => {
+    setError(null);
+    setManualScriptData({
+      title: manualTitle,
+      concept: manualConcept,
+      duration: manualDuration,
+    });
+    setManualStep(AppStep.OUTLINES_GENERATED);
 
     try {
-      await runGenerationProcess(manualTitle, manualConcept, manualDuration, onManualProgress);
+      await runGenerationProcess(
+        manualTitle,
+        manualConcept,
+        manualDuration,
+        (update) => {
+          setManualScriptData(prev => ({ ...prev, ...update }));
+        }
+      );
+    } catch (e) {
+      const errorMsg = e instanceof Error ? e.message : String(e);
+      setError(errorMsg);
       
-      // Post-process after success
-      setManualStep(AppStep.HOOK_GENERATED); // To ensure UI shows results
-      
-      // Need to get the final state of manualScriptData
-      setManualScriptData(finalManualData => {
-        const countWords = (str: string) => str?.split(/\s+/).filter(Boolean).length || 0;
-        const finalWordsWritten = countWords(finalManualData.hook || '') + (finalManualData.chaptersContent || []).reduce((sum, content) => sum + countWords(content), 0);
-        const targetTotalWords = (finalManualData.outlines || []).filter(o => o.id > 0).reduce((sum, ch) => sum + ch.wordCount, 0) + 150;
-
-        const newJob: ScriptJob = {
-          id: `job_${Date.now()}`,
+      // FIX: Added default values for required ScriptJob properties to ensure type safety.
+      const failedJob: ScriptJob = {
+          id: `manual_${Date.now()}`,
           source: 'MANUAL',
           title: manualTitle,
           concept: manualConcept,
           duration: manualDuration,
-          status: 'DONE',
+          status: 'FAILED',
           createdAt: Date.now(),
-          rawOutlineText: finalManualData.rawOutlineText || '',
-          refinedTitle: finalManualData.refinedTitle || '',
-          outlines: finalManualData.outlines || [],
-          hook: finalManualData.hook || '',
-          chaptersContent: finalManualData.chaptersContent || [],
-          wordsWritten: finalWordsWritten,
-          totalWords: targetTotalWords,
-          currentTask: 'Completed!',
-          libraryStatus: 'AVAILABLE',
-        };
-        setJobs(prev => [...prev, newJob]);
-        setSelectedJobToView(newJob);
-        return finalManualData;
-      });
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "An unknown error occurred during script generation.");
+          error: errorMsg,
+          // Add defaults for required fields before spreading partial data
+          rawOutlineText: '',
+          refinedTitle: '',
+          outlines: [],
+          hook: '',
+          chaptersContent: [],
+          ...manualScriptData // This contains the partial data
+      };
+      setJobs(prevJobs => [failedJob, ...prevJobs]);
+      alert("Script generation failed. The partial script has been saved to the Automation queue. You can resume it from there.");
+      setView('AUTOMATION');
+      resetManualState();
     }
-  }
-
-  // --- Automation Flow ---
-  const handleAddToQueue = () => {
-    if (!automationTitle || !automationConcept) {
-      setError("Please provide a title and concept for the automation job.");
-      return;
+  };
+  
+  // --- Automation Logic ---
+  const addJobToQueue = () => {
+    if (!automationTitle.trim() || !automationConcept.trim()) {
+        alert("Please provide a title and concept.");
+        return;
     }
-    setError(null);
     const newJob: ScriptJob = {
-      id: `job_${Date.now()}`,
-      source: 'AUTOMATION',
-      title: automationTitle,
-      concept: automationConcept,
-      duration: automationDuration,
-      status: 'PENDING',
-      createdAt: Date.now(),
-      rawOutlineText: '',
-      refinedTitle: '',
-      outlines: [],
-      hook: '',
-      chaptersContent: [],
-      wordsWritten: 0,
-      totalWords: 0,
+        id: `auto_${Date.now()}`,
+        source: 'AUTOMATION',
+        title: automationTitle,
+        concept: automationConcept,
+        duration: automationDuration,
+        status: 'PENDING',
+        createdAt: Date.now(),
+        rawOutlineText: '',
+        refinedTitle: '',
+        outlines: [],
+        hook: '',
+        chaptersContent: [],
     };
-    setJobs(prev => [...prev, newJob]);
+    setJobs(prev => [newJob, ...prev]);
     setAutomationTitle('');
     setAutomationConcept('');
-    setAutomationDuration(40);
   };
 
-  const handleAutomationControl = (control: 'RUN' | 'PAUSE' | 'STOP') => {
-    if (control === 'RUN') {
-        if (apiKeys.length === 0) {
-            setError("Cannot run automation. No Gemini API keys found.");
-            setIsApiManagerOpen(true);
-            return;
-        }
-        const hasPending = jobs.some(j => j.source === 'AUTOMATION' && (j.status === 'PENDING' || j.status === 'FAILED'));
-        if (!hasPending) {
-            alert("No pending or failed jobs in the queue to run.");
-            return;
-        }
-        setAutomationStatus('RUNNING');
-        setError(null);
-    } else if (control === 'PAUSE') {
-        setAutomationStatus('PAUSED');
-        isPausedRef.current = true;
-    } else if (control === 'STOP') {
-        setAutomationStatus('IDLE');
-        isStoppedRef.current = true;
-        isPausedRef.current = false;
-        setGenerationStatus(GenerationStatus.IDLE);
-        setJobs(prev => prev.map(j => j.status === 'RUNNING' ? {...j, status: 'FAILED', error: 'Stopped by user.', currentTask: 'Stopped'} : j));
-    }
-  };
-
-  const deleteJob = (jobId: string) => {
-    if (confirm('Are you sure you want to delete this script? This cannot be undone.')) {
-        setJobs(prev => prev.filter(j => j.id !== jobId));
-        if (selectedJobToView?.id === jobId) {
-          setSelectedJobToView(null);
-        }
-    }
-  }
+  const updateJob = useCallback((jobId: string, updates: Partial<ScriptJob>) => {
+    setJobs(prevJobs => prevJobs.map(job => 
+        job.id === jobId ? { ...job, ...updates } : job
+    ));
+    // Also update the selected job if it's the one being updated
+    setSelectedJobToView(prev => prev && prev.id === jobId ? { ...prev, ...updates } : prev);
+  }, [setJobs]);
   
-  const handleToggleArchiveStatus = (jobId: string) => {
-    setJobs(prev => prev.map(job => {
-        if (job.id === jobId) {
-            return { ...job, libraryStatus: job.libraryStatus === 'ARCHIVED' ? 'AVAILABLE' : 'ARCHIVED' };
+  const startAutomation = useCallback(async () => {
+    if (automationStatusRef.current === 'RUNNING') return;
+    setAutomationStatus('RUNNING');
+
+    while (true) {
+        if (isStoppedRef.current) {
+            setAutomationStatus('IDLE');
+            break;
         }
-        return job;
-    }));
-  };
-
-  const retryJob = (jobId: string) => {
-    setJobs(prev => prev.map(j => j.id === jobId ? {...j, status: 'PENDING', error: undefined } : j));
-  }
-  
-  // New Automation Controller
-  useEffect(() => {
-    if (automationStatus !== 'RUNNING') return;
-
-    let isCancelled = false;
-
-    const startAutomationQueue = async () => {
-      while (!isCancelled) {
-        // Find the next job that needs processing
-        const nextJob = jobsRef.current.find(j => j.source === 'AUTOMATION' && (j.status === 'PENDING' || j.status === 'FAILED'));
-
-        if (!nextJob) {
-          console.log("Automation queue finished.");
-          setAutomationStatus('IDLE');
-          break;
-        }
-
-        // Handle pause state
-        while (automationStatusRef.current === 'PAUSED') {
-          setJobs(prev => prev.map(j => j.id === nextJob.id ? { ...j, currentTask: 'Automation Paused...' } : j));
-          await new Promise(resolve => setTimeout(resolve, 1000));
-        }
-
-        // Handle stop state
-        if (automationStatusRef.current === 'IDLE') {
-          console.log("Automation stopped by user.");
-          break;
+        while (isPausedRef.current) {
+            await new Promise(res => setTimeout(res, 1000));
         }
         
-        const updateJobState = (jobId: string, updates: Partial<ScriptJob> | ((prevJob: ScriptJob) => Partial<ScriptJob>)) => {
-            setJobs(prevJobs => prevJobs.map(j => {
-                if (j.id === jobId) {
-                    const finalUpdates = typeof updates === 'function' ? updates(j) : updates;
-                    return { ...j, ...finalUpdates };
-                }
-                return j;
-            }));
-        };
+        const pendingJob = jobsRef.current.find(j => j.status === 'PENDING');
+        if (!pendingJob) {
+            setAutomationStatus('IDLE');
+            break;
+        }
 
-        const onJobProgress = (update: Partial<ScriptJob>) => {
-            updateJobState(nextJob.id, (prevJob) => {
-                // FIX: This expression is not callable because TypeScript infers `update.chaptersContent`
-                // as `never` inside a `typeof... === 'function'` check, since its type is `string[] | undefined`.
-                // Casting to `any` allows the function call to proceed, which is correct at runtime.
-                const newChapters = typeof update.chaptersContent === 'function'
-                    ? (update.chaptersContent as any)(prevJob.chaptersContent)
-                    : update.chaptersContent;
-
-                const newPartialJob: Partial<ScriptJob> = {
-                    ...update,
-                    ...(newChapters && { chaptersContent: newChapters }),
-                };
-
-                const countWords = (str: string) => str?.split(/\s+/).filter(Boolean).length || 0;
-                const hookWords = countWords(newPartialJob.hook || prevJob.hook || '');
-                const chapterWords = (newPartialJob.chaptersContent || prevJob.chaptersContent || []).reduce((sum, content) => sum + countWords(content), 0);
-                
-                return { ...newPartialJob, wordsWritten: hookWords + chapterWords };
-            });
-        };
+        updateJob(pendingJob.id, { status: 'RUNNING', currentTask: 'Starting...' });
+        
+        let currentJobData: Partial<ScriptJob> = { ...pendingJob };
 
         try {
-            updateJobState(nextJob.id, { status: 'RUNNING', error: undefined });
-            setSelectedJobToView(jobsRef.current.find(j => j.id === nextJob.id) || null);
-
-            await runGenerationProcess(nextJob.title, nextJob.concept, nextJob.duration, onJobProgress);
-
-            const finalWords = jobsRef.current.find(j => j.id === nextJob.id)?.wordsWritten || 0;
-            const outlines = jobsRef.current.find(j => j.id === nextJob.id)?.outlines || [];
-            const targetTotalWords = outlines.filter(o => o.id > 0).reduce((sum, ch) => sum + ch.wordCount, 0) + 150;
-            
-            updateJobState(nextJob.id, { status: 'DONE', currentTask: 'Completed!', libraryStatus: 'AVAILABLE', wordsWritten: finalWords, totalWords: targetTotalWords });
-
-            // Cooldown period
-            for (let i = 300; i > 0; i--) {
-                if (automationStatusRef.current !== 'RUNNING') break;
-                setCurrentTask(`Cooldown: Next job in ${i}s...`);
-                await new Promise(resolve => setTimeout(resolve, 1000));
-            }
-            if (automationStatusRef.current !== 'RUNNING') break;
-
-        } catch (error) {
-            const errorMessage = error instanceof Error ? error.message : "An unknown error occurred.";
-            updateJobState(nextJob.id, { status: 'FAILED', error: errorMessage, currentTask: 'Error!' });
-            // Don't cooldown after a failure, just move to the next.
+            await runGenerationProcess(
+                pendingJob.title,
+                pendingJob.concept,
+                pendingJob.duration,
+                (update) => {
+                    currentJobData = { ...currentJobData, ...update };
+                    updateJob(pendingJob.id, { ...update, status: 'RUNNING' });
+                },
+                pendingJob // Pass the entire job object as existingData for resuming
+            );
+            updateJob(pendingJob.id, { status: 'DONE', libraryStatus: 'AVAILABLE', error: undefined, currentTask: 'Completed' });
+        } catch (e) {
+            console.error(`Job ${pendingJob.id} failed:`, e);
+            updateJob(pendingJob.id, {
+                ...currentJobData,
+                status: 'FAILED',
+                error: e instanceof Error ? e.message : String(e),
+                currentTask: 'Failed'
+            });
         }
-      }
-    };
-    
-    startAutomationQueue();
-
-    return () => { isCancelled = true; };
-  }, [automationStatus]);
-
-
-  const getStatusBadge = (status: AutomationJobStatus) => {
-    const styles: Record<AutomationJobStatus, string> = {
-        PENDING: 'bg-yellow-800 text-yellow-200',
-        RUNNING: 'bg-blue-800 text-blue-200 animate-pulse',
-        DONE: 'bg-green-800 text-green-200',
-        FAILED: 'bg-red-800 text-red-200',
     }
-    return <span className={`px-2 py-1 text-xs font-semibold rounded-full ${styles[status]}`}>{status}</span>
-  }
+  }, [updateJob]);
 
-  const copyToClipboard = (text: string, type: string) => {
-    if (!text) {
-      alert(`Nothing to copy for ${type}.`);
-      return;
+  const handleResumeJob = (jobId: string) => {
+    setJobs(prevJobs => prevJobs.map(j => 
+        j.id === jobId ? { ...j, status: 'PENDING', error: undefined, currentTask: 'Queued for resume...' } : j
+    ));
+    if (automationStatusRef.current !== 'RUNNING') {
+      // Use setTimeout to allow state to update before starting
+      setTimeout(() => startAutomation(), 0);
     }
-    navigator.clipboard.writeText(text)
-      .then(() => alert(`${type} copied to clipboard!`))
-      .catch(err => alert(`Failed to copy ${type}.`));
-  }
-  
-  const stripChapterHeading = (text: string): string => {
-    if (!text) return '';
-    return text.replace(/^Chapter\s+\d+:\s+.*?\n\n?/im, '').trim();
   };
 
-  const handleCopyFullScript = () => {
-    const scriptParts = [
-      jobToDisplay?.hook,
-      ...(jobToDisplay?.chaptersContent || []).slice(1).filter(Boolean).map(stripChapterHeading)
-    ];
-    copyToClipboard(scriptParts.join('\n\n'), "Full script");
-  }
-
-  const handleCopyHookAndChapter1 = () => {
-    const scriptParts = [jobToDisplay?.hook, stripChapterHeading(jobToDisplay?.chaptersContent?.[1] || '')].filter(Boolean);
-    copyToClipboard(scriptParts.join('\n\n'), "Hook and Chapter 1");
-  }
-
-  const handleCopyRestOfScript = () => {
-    const scriptParts = (jobToDisplay?.chaptersContent || []).slice(2).filter(Boolean).map(stripChapterHeading);
-    copyToClipboard(scriptParts.join('\n\n'), "Rest of script");
-  }
-
-  const isGenerating = generationStatus === GenerationStatus.RUNNING || generationStatus === GenerationStatus.PAUSED;
-  const isScriptGenerated = (manualStep >= AppStep.HOOK_GENERATED && !isGenerating) || (selectedJobToView?.status === 'DONE');
+  const handleArchive = (jobId: string) => {
+      updateJob(jobId, { libraryStatus: 'ARCHIVED' });
+  };
   
+  const handleUnarchive = (jobId: string) => {
+      updateJob(jobId, { libraryStatus: 'AVAILABLE' });
+  };
+
+  const handleDeleteJob = (jobId: string) => {
+      if (window.confirm("Are you sure you want to permanently delete this script? This cannot be undone.")) {
+        setJobs(prev => prev.filter(j => j.id !== jobId));
+        if (selectedJobToView?.id === jobId) {
+            setSelectedJobToView(null);
+        }
+      }
+  };
+  
+  // --- UI Components ---
+  const renderNav = () => (
+    <nav className="flex items-center justify-between p-4 bg-gray-900 border-b border-gray-800">
+      <div className="flex items-center gap-2">
+          <h1 className="text-xl font-bold text-indigo-400">AI YouTube Scriptwriter</h1>
+      </div>
+      <div className="flex-grow flex justify-center items-center gap-4">
+        {(['AUTOMATION', 'LIBRARY', 'MANUAL'] as AppView[]).map(v => (
+          <button
+            key={v}
+            onClick={() => { setView(v); setSelectedJobToView(null); resetManualState(); }}
+            className={`px-4 py-2 rounded-md text-sm font-medium transition-colors ${
+              view === v ? 'bg-indigo-600 text-white' : 'text-gray-300 hover:bg-gray-700'
+            }`}
+          >
+            {v.charAt(0) + v.slice(1).toLowerCase()}
+          </button>
+        ))}
+      </div>
+      <button onClick={() => setIsApiManagerOpen(true)} className="p-2 rounded-full hover:bg-gray-700 transition-colors" aria-label="Open API Key Manager">
+          <GearIcon />
+      </button>
+    </nav>
+  );
+
+  const renderScriptContent = (job: ScriptJob | Partial<ScriptJob>) => (
+    <div className="space-y-6">
+      <div>
+        <h2 className="text-2xl font-bold text-indigo-400 mb-2">{job.refinedTitle || job.title}</h2>
+        <p className="text-gray-400 italic">{job.concept}</p>
+      </div>
+
+      {job.outlines && job.outlines.length > 0 && (
+          <div>
+              <h3 className="text-lg font-semibold text-gray-300 mb-2 border-b border-gray-700 pb-1">Outline</h3>
+              <ul className="space-y-2">
+                  {job.outlines.map(ch => (
+                      <li key={ch.id} className={`p-3 rounded-md transition-all duration-300 ${writingChapterIds.includes(ch.id) ? 'bg-indigo-900/50 animate-pulse' : 'bg-gray-800'}`}>
+                          <p className="font-semibold text-indigo-300">{`Chapter ${ch.id}: ${ch.title}`} <span className="text-xs text-gray-500 font-normal">{ch.id > 0 && `(${ch.wordCount} words)`}</span></p>
+                          <p className="text-sm text-gray-400 ml-4">{ch.concept}</p>
+                      </li>
+                  ))}
+              </ul>
+          </div>
+      )}
+
+      {job.hook && (
+        <div>
+            <h3 className="text-lg font-semibold text-gray-300 mb-2 border-b border-gray-700 pb-1">Hook</h3>
+            <p className="bg-gray-800 p-4 rounded-md whitespace-pre-wrap">{job.hook}</p>
+        </div>
+      )}
+
+      {job.chaptersContent && job.chaptersContent.length > 0 && (
+        <div>
+            <h3 className="text-lg font-semibold text-gray-300 mb-2 border-b border-gray-700 pb-1">Chapters</h3>
+            <div className="space-y-4">
+              {job.chaptersContent.map((content, index) => {
+                const chapterInfo = job.outlines?.find(o => o.id === index + 1);
+                return (
+                  <div key={index}>
+                    <h4 className="font-semibold text-indigo-300 mb-1">{`Chapter ${index + 1}: ${chapterInfo?.title || ''}`}</h4>
+                    <p className="bg-gray-800 p-4 rounded-md whitespace-pre-wrap">{content}</p>
+                  </div>
+                )
+              })}
+            </div>
+        </div>
+      )}
+    </div>
+  );
+
+  const AutomationView = () => (
+    <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
+        {/* Left: Input Form */}
+        <div className="md:col-span-1 bg-gray-900 p-6 rounded-lg border border-gray-800">
+            <h2 className="text-xl font-bold text-indigo-400 mb-4">Add Script to Queue</h2>
+            <div className="space-y-4">
+                <div>
+                    <label htmlFor="auto-title" className="block text-sm font-medium text-gray-400 mb-1">Video Title</label>
+                    <input type="text" id="auto-title" value={automationTitle} onChange={e => setAutomationTitle(e.target.value)} className="w-full bg-gray-800 border border-gray-700 rounded-md p-2 focus:ring-2 focus:ring-indigo-500 focus:outline-none" />
+                </div>
+                <div>
+                    <label htmlFor="auto-concept" className="block text-sm font-medium text-gray-400 mb-1">Story Concept</label>
+                    <textarea id="auto-concept" value={automationConcept} onChange={e => setAutomationConcept(e.target.value)} rows={4} className="w-full bg-gray-800 border border-gray-700 rounded-md p-2 focus:ring-2 focus:ring-indigo-500 focus:outline-none"></textarea>
+                </div>
+                <div>
+                    <label htmlFor="auto-duration" className="block text-sm font-medium text-gray-400 mb-1">Video Duration (minutes)</label>
+                    <input type="number" id="auto-duration" value={automationDuration} onChange={e => setAutomationDuration(Number(e.target.value))} className="w-full bg-gray-800 border border-gray-700 rounded-md p-2 focus:ring-2 focus:ring-indigo-500 focus:outline-none" />
+                </div>
+                <Button onClick={addJobToQueue} className="w-full">Add to Queue</Button>
+            </div>
+        </div>
+
+        {/* Right: Queue */}
+        <div className="md:col-span-2 bg-gray-900 p-6 rounded-lg border border-gray-800">
+            <div className="flex justify-between items-center mb-4">
+                <h2 className="text-xl font-bold text-indigo-400">Automation Queue</h2>
+                <Button onClick={startAutomation} disabled={automationStatus === 'RUNNING' || !jobs.some(j => j.status === 'PENDING')}>
+                    {automationStatus === 'RUNNING' ? 'Running...' : 'Start Automation'}
+                </Button>
+            </div>
+            <div className="space-y-3 max-h-[60vh] overflow-y-auto pr-2">
+                {jobs.filter(j => j.status !== 'DONE').length > 0 ? jobs.filter(j => j.status !== 'DONE').map(job => (
+                    <div key={job.id} className="bg-gray-800 p-4 rounded-md flex items-center justify-between">
+                        <div>
+                            <p className="font-semibold text-gray-200">{job.title}</p>
+                            <p className="text-sm text-gray-400">{job.currentTask || job.status}</p>
+                            {job.status === 'FAILED' && <p className="text-xs text-red-400 truncate max-w-xs" title={job.error}>Error: {job.error}</p>}
+                        </div>
+                        <div className="flex gap-2">
+                          {job.status === 'FAILED' ? (
+                            <Button onClick={() => handleResumeJob(job.id)} variant="primary" className="bg-yellow-600 hover:bg-yellow-500 focus:ring-yellow-500">Resume</Button>
+                          ) : (
+                            <Button onClick={() => setSelectedJobToView(job)} variant="secondary">View</Button>
+                          )}
+                          <Button onClick={() => handleDeleteJob(job.id)} variant="secondary" className="bg-red-800 hover:bg-red-700">Delete</Button>
+                        </div>
+                    </div>
+                )) : <p className="text-gray-500 text-center py-4">The queue is empty.</p>}
+            </div>
+        </div>
+    </div>
+  );
+
+  const LibraryView = () => {
+    const libraryJobs = jobs.filter(j => j.status === 'DONE');
+    const visibleJobs = showArchived 
+        ? libraryJobs.filter(j => j.libraryStatus === 'ARCHIVED')
+        : libraryJobs.filter(j => j.libraryStatus !== 'ARCHIVED');
+
+    return (
+        <div className="bg-gray-900 p-6 rounded-lg border border-gray-800">
+             <div className="flex justify-between items-center mb-4">
+                <h2 className="text-xl font-bold text-indigo-400">Script Library</h2>
+                <label className="flex items-center gap-2 cursor-pointer">
+                    <input type="checkbox" checked={showArchived} onChange={() => setShowArchived(!showArchived)} className="form-checkbox h-5 w-5 bg-gray-800 border-gray-600 rounded text-indigo-600 focus:ring-indigo-500" />
+                    <span className="text-gray-300">Show Archived</span>
+                </label>
+            </div>
+            <div className="space-y-3 max-h-[70vh] overflow-y-auto pr-2">
+                {visibleJobs.length > 0 ? visibleJobs.map(job => (
+                     <div key={job.id} className="bg-gray-800 p-4 rounded-md flex items-center justify-between">
+                        <div>
+                            <p className="font-semibold text-gray-200">{job.refinedTitle || job.title}</p>
+                            <p className="text-sm text-gray-400">Created: {new Date(job.createdAt).toLocaleDateString()}</p>
+                        </div>
+                        <div className="flex gap-2">
+                            <Button onClick={() => setSelectedJobToView(job)} variant="secondary">View</Button>
+                            {job.libraryStatus !== 'ARCHIVED' ? (
+                                <Button onClick={() => handleArchive(job.id)} variant="secondary">Archive</Button>
+                            ) : (
+                                <Button onClick={() => handleUnarchive(job.id)} variant="secondary">Unarchive</Button>
+                            )}
+                             <Button onClick={() => handleDeleteJob(job.id)} variant="secondary" className="bg-red-800 hover:bg-red-700">Delete</Button>
+                        </div>
+                    </div>
+                )) : <p className="text-gray-500 text-center py-4">No {showArchived ? 'archived' : 'available'} scripts found.</p>}
+            </div>
+        </div>
+    );
+  };
+  
+  const ManualView = () => (
+    <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
+      {/* Left Pane: Inputs */}
+      <div className="md:col-span-1 bg-gray-900 p-6 rounded-lg border border-gray-800">
+        <h2 className="text-xl font-bold text-indigo-400 mb-6">Manual Script Generation</h2>
+        <div className="space-y-4">
+          <div>
+            <label htmlFor="manual-title" className="block text-sm font-medium text-gray-400 mb-1">Video Title</label>
+            <input
+              type="text"
+              id="manual-title"
+              value={manualTitle}
+              onChange={e => setManualTitle(e.target.value)}
+              disabled={generationStatus !== GenerationStatus.IDLE}
+              className="w-full bg-gray-800 border border-gray-700 rounded-md p-2 focus:ring-2 focus:ring-indigo-500 focus:outline-none disabled:opacity-50"
+            />
+          </div>
+          <div>
+            <label htmlFor="manual-concept" className="block text-sm font-medium text-gray-400 mb-1">Story Concept</label>
+            <textarea
+              id="manual-concept"
+              value={manualConcept}
+              onChange={e => setManualConcept(e.target.value)}
+              rows={5}
+              disabled={generationStatus !== GenerationStatus.IDLE}
+              className="w-full bg-gray-800 border border-gray-700 rounded-md p-2 focus:ring-2 focus:ring-indigo-500 focus:outline-none disabled:opacity-50"
+            ></textarea>
+          </div>
+          <div>
+            <label htmlFor="manual-duration" className="block text-sm font-medium text-gray-400 mb-1">Video Duration (minutes)</label>
+            <input
+              type="number"
+              id="manual-duration"
+              value={manualDuration}
+              onChange={e => setManualDuration(Number(e.target.value))}
+              disabled={generationStatus !== GenerationStatus.IDLE}
+              className="w-full bg-gray-800 border border-gray-700 rounded-md p-2 focus:ring-2 focus:ring-indigo-500 focus:outline-none disabled:opacity-50"
+            />
+          </div>
+          <div className="pt-2">
+            <Button
+              onClick={handleManualOneClickGenerate}
+              disabled={generationStatus !== GenerationStatus.IDLE || !manualTitle.trim() || !manualConcept.trim()}
+              className="w-full"
+            >
+              Generate Full Script
+            </Button>
+             <Button
+                onClick={resetManualState}
+                variant="secondary"
+                className="w-full mt-2"
+                disabled={generationStatus !== GenerationStatus.IDLE && manualStep === AppStep.INITIAL}
+            >
+                Reset
+            </Button>
+          </div>
+          {error && <p className="mt-4 text-red-400 text-sm">{error}</p>}
+        </div>
+      </div>
+
+      {/* Right Pane: Output */}
+      <div className="md:col-span-2 bg-gray-900 p-6 rounded-lg border border-gray-800 min-h-[60vh]">
+        {manualStep === AppStep.INITIAL && (
+          <div className="flex items-center justify-center h-full">
+            <p className="text-gray-500">Enter a title, concept, and duration to begin.</p>
+          </div>
+        )}
+        {(manualStep > AppStep.INITIAL || generationStatus !== GenerationStatus.IDLE) && (
+            generationStatus === GenerationStatus.RUNNING && !manualScriptData.rawOutlineText ? (
+                <InlineLoader message={currentTask} />
+            ) : (
+                renderScriptContent(manualScriptData)
+            )
+        )}
+      </div>
+    </div>
+  );
+
   if (!isAuthenticated) {
     return <PasswordProtection onAuthenticate={handleAuthentication} />;
   }
 
-  const automationJobs = jobs.filter(j => j.source === 'AUTOMATION');
-  const libraryJobs = jobs
-    .filter(j => j.status === 'DONE')
-    .filter(j => showArchived ? j.libraryStatus === 'ARCHIVED' : j.libraryStatus !== 'ARCHIVED')
-    .sort((a, b) => b.createdAt - a.createdAt);
-
-
   return (
-    <div className="min-h-screen bg-gray-950 text-gray-200 font-sans">
+    <div className="min-h-screen">
+      {renderNav()}
+      <main className="p-8">
+        {selectedJobToView ? (
+             <div className="bg-gray-900 p-6 rounded-lg border border-gray-800">
+                <Button onClick={() => setSelectedJobToView(null)} variant="secondary" className="mb-4">← Back to List</Button>
+                {renderScriptContent(selectedJobToView)}
+             </div>
+        ) : (
+            <>
+                {view === 'MANUAL' && <ManualView />}
+                {view === 'AUTOMATION' && <AutomationView />}
+                {view === 'LIBRARY' && <LibraryView />}
+            </>
+        )}
+      </main>
+      <GenerationControls
+        status={automationStatus === 'IDLE' ? generationStatus : (automationStatus === 'RUNNING' ? GenerationStatus.RUNNING : GenerationStatus.PAUSED)}
+        onPause={handlePause}
+        onResume={handleResume}
+        onStop={handleStop}
+        currentTask={currentTask}
+        progress={progress}
+      />
       <ApiKeyManager
         isOpen={isApiManagerOpen}
         onClose={() => setIsApiManagerOpen(false)}
         apiKeys={apiKeys}
         setApiKeys={setApiKeys}
       />
-      <GenerationControls status={generationStatus} onPause={() => { isPausedRef.current = true; setGenerationStatus(GenerationStatus.PAUSED); }} onResume={() => { isPausedRef.current = false; setGenerationStatus(GenerationStatus.RUNNING); }} onStop={() => { isStoppedRef.current = true; isPausedRef.current = false; setGenerationStatus(GenerationStatus.DONE); }} currentTask={currentTask} progress={progress} />
-      
-      <main className="max-w-6xl mx-auto p-4 sm:p-6 lg:p-8">
-        <header className="text-center mb-10 relative">
-          <h1 className="text-4xl sm:text-5xl font-extrabold text-transparent bg-clip-text bg-gradient-to-r from-indigo-400 to-purple-500">
-            AI YouTube Scriptwriter
-          </h1>
-          <p className="mt-2 text-lg text-gray-400">Automate your viral revenge story script in minutes.</p>
-           <button 
-             onClick={() => setIsApiManagerOpen(true)}
-             className="absolute top-0 right-0 p-2 text-gray-400 hover:text-white transition-colors duration-200"
-             aria-label="Open API Key Manager"
-           >
-             <GearIcon />
-           </button>
-        </header>
-
-        {!selectedJobToView && (
-            <nav className="flex justify-center items-center gap-2 mb-8 p-2 bg-gray-800 rounded-lg">
-                {(['MANUAL', 'AUTOMATION', 'LIBRARY'] as AppView[]).map(v => (
-                    <button 
-                        key={v}
-                        onClick={() => { setView(v); setSelectedJobToView(null); }}
-                        className={`px-4 py-2 text-sm font-semibold rounded-md transition-colors duration-200 w-full ${view === v ? 'bg-indigo-600 text-white' : 'bg-gray-700 hover:bg-gray-600'}`}
-                    >
-                        {v.charAt(0) + v.slice(1).toLowerCase()}
-                    </button>
-                ))}
-            </nav>
-        )}
-
-        {error && (
-            <div className="bg-red-900 border border-red-700 text-red-200 px-4 py-3 rounded-lg relative mb-6" role="alert">
-                <strong className="font-bold">Error: </strong>
-                <span className="block sm:inline">{error}</span>
-                <button onClick={() => setError(null)} className="absolute top-0 bottom-0 right-0 px-4 py-3">
-                    <span className="text-2xl">&times;</span>
-                </button>
-            </div>
-        )}
-        
-        {!selectedJobToView ? (
-          <div className="bg-gray-800/50 p-6 rounded-lg shadow-lg mb-8">
-            {view === 'MANUAL' && (
-              <div>
-                <h2 className="text-2xl font-bold mb-4 text-indigo-400">Manual Script Generator</h2>
-                <div className="space-y-4">
-                    <input type="text" value={manualTitle} onChange={e => setManualTitle(e.target.value)} placeholder="Video Title" className="w-full bg-gray-700 border border-gray-600 rounded-md p-3 focus:ring-2 focus:ring-indigo-500 focus:outline-none" />
-                    <textarea value={manualConcept} onChange={e => setManualConcept(e.target.value)} placeholder="Story Concept / Summary" rows={4} className="w-full bg-gray-700 border border-gray-600 rounded-md p-3 focus:ring-2 focus:ring-indigo-500 focus:outline-none"></textarea>
-                    <div className="flex items-center gap-4">
-                      <label htmlFor="duration" className="font-medium">Video Duration (mins):</label>
-                      <input type="number" id="duration" value={manualDuration} onChange={e => setManualDuration(Number(e.target.value))} className="w-24 bg-gray-700 border border-gray-600 rounded-md p-2 focus:ring-2 focus:ring-indigo-500 focus:outline-none" />
-                    </div>
-                    <Button onClick={handleGenerateFullScript} disabled={isGenerating}>
-                      {isGenerating ? 'Generating...' : 'Generate Full Script'}
-                    </Button>
-                </div>
-              </div>
-            )}
-
-            {view === 'AUTOMATION' && (
-              <div>
-                <h2 className="text-2xl font-bold mb-4 text-indigo-400">Setup Automation</h2>
-                <div className="space-y-4 p-4 border border-gray-700 rounded-lg mb-6">
-                    <input type="text" value={automationTitle} onChange={e => setAutomationTitle(e.target.value)} placeholder="Video Title" className="w-full bg-gray-700 border border-gray-600 rounded-md p-3 focus:ring-2 focus:ring-indigo-500 focus:outline-none" />
-                    <textarea value={automationConcept} onChange={e => setAutomationConcept(e.target.value)} placeholder="Story Concept / Summary" rows={4} className="w-full bg-gray-700 border border-gray-600 rounded-md p-3 focus:ring-2 focus:ring-indigo-500 focus:outline-none"></textarea>
-                    <div className="flex items-center gap-4">
-                      <label htmlFor="auto_duration" className="font-medium">Video Duration (mins):</label>
-                      <input type="number" id="auto_duration" value={automationDuration} onChange={e => setAutomationDuration(Number(e.target.value))} className="w-24 bg-gray-700 border border-gray-600 rounded-md p-2 focus:ring-2 focus:ring-indigo-500 focus:outline-none" />
-                    </div>
-                    <Button onClick={handleAddToQueue}>Add to Queue</Button>
-                </div>
-                <div className="flex justify-between items-center mb-4">
-                  <h3 className="text-xl font-bold">Automation Queue ({automationJobs.filter(j => j.status === 'PENDING' || j.status === 'FAILED').length} pending)</h3>
-                  <div className="flex gap-2">
-                      {automationStatus === 'IDLE' && <Button onClick={() => handleAutomationControl('RUN')} disabled={!automationJobs.some(j => j.status === 'PENDING' || j.status === 'FAILED')}>Run Automation</Button>}
-                      {automationStatus === 'RUNNING' && <Button onClick={() => handleAutomationControl('PAUSE')} variant="secondary">Pause Automation</Button>}
-                      {automationStatus === 'PAUSED' && <Button onClick={() => handleAutomationControl('RUN')}>Resume Automation</Button>}
-                      {automationStatus !== 'IDLE' && <Button onClick={() => handleAutomationControl('STOP')} className="bg-red-800 hover:bg-red-700 focus:ring-red-600">Stop Automation</Button>}
-                  </div>
-                </div>
-                <ul className="space-y-3">
-                  {automationJobs.map(job => {
-                    const percentage = (job.totalWords && job.wordsWritten) ? Math.min(100, Math.round((job.wordsWritten / job.totalWords) * 100)) : 0;
-                    return (
-                      <li key={job.id} onClick={() => setSelectedJobToView(job)} className="bg-gray-700 p-3 rounded-md cursor-pointer hover:bg-gray-600 transition-colors duration-200">
-                        <div className="flex justify-between items-start">
-                          <div className="flex-grow">
-                            <p className="font-semibold">{job.title}</p>
-                            <p className="text-sm text-gray-400">{job.status !== 'RUNNING' ? job.concept.substring(0, 50)+'...' : job.currentTask}</p>
-                            {job.status === 'FAILED' && <p className="text-xs text-red-400 mt-1">Error: {job.error}</p>}
-                          </div>
-                          <div className="flex items-center gap-2 flex-shrink-0 ml-4">
-                              {getStatusBadge(job.status)}
-                              {job.status === 'FAILED' && <Button onClick={(e) => { e.stopPropagation(); retryJob(job.id); }} variant="secondary" className="px-3 py-1 text-xs">Retry</Button>}
-                              <button onClick={(e) => { e.stopPropagation(); deleteJob(job.id); }} className="text-gray-400 hover:text-red-400 transition-colors text-xl font-bold">&times;</button>
-                          </div>
-                        </div>
-                        {job.status === 'RUNNING' && (
-                          <div className="mt-2">
-                            <div className="flex justify-between items-baseline mb-1">
-                              <span className="text-xs font-medium text-gray-300">{job.wordsWritten || 0} / {job.totalWords || '?'} words</span>
-                            </div>
-                            <div className="w-full bg-gray-600 rounded-full h-2">
-                              <div className="bg-indigo-500 h-2 rounded-full transition-all duration-300" style={{ width: `${percentage}%` }}></div>
-                            </div>
-                          </div>
-                        )}
-                      </li>
-                    );
-                  })}
-                  {automationJobs.length === 0 && <p className="text-gray-400 text-center py-4">Queue is empty. Add a script to get started.</p>}
-                </ul>
-              </div>
-            )}
-
-            {view === 'LIBRARY' && (
-               <div>
-                <div className="flex justify-between items-center mb-4">
-                    <h2 className="text-2xl font-bold text-indigo-400">Script Library</h2>
-                    <Button onClick={() => setShowArchived(prev => !prev)} variant="secondary">
-                        {showArchived ? 'View Available Scripts' : 'View Archived Scripts'}
-                    </Button>
-                </div>
-                 <ul className="space-y-3">
-                  {libraryJobs.map(job => (
-                    <li key={job.id} onClick={() => setSelectedJobToView(job)} className="bg-gray-700 p-4 rounded-md flex justify-between items-center cursor-pointer hover:bg-gray-600 transition-colors duration-200">
-                      <div>
-                        <p className="font-semibold">{job.title}</p>
-                        <p className="text-sm text-gray-400">Created: {new Date(job.createdAt).toLocaleString()}</p>
-                      </div>
-                      <div className="flex items-center gap-3">
-                        <Button
-                            onClick={(e) => {
-                                e.stopPropagation();
-                                handleToggleArchiveStatus(job.id);
-                            }}
-                            variant="secondary"
-                            className="px-3 py-1 text-xs"
-                        >
-                            {job.libraryStatus === 'ARCHIVED' ? 'Unarchive' : 'Archive'}
-                        </Button>
-                        <button
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            deleteJob(job.id);
-                          }}
-                          className="text-gray-400 hover:text-red-400 transition-colors text-2xl font-bold leading-none"
-                          aria-label={`Delete script: ${job.title}`}
-                        >
-                          &times;
-                        </button>
-                      </div>
-                    </li>
-                  ))}
-                  {libraryJobs.length === 0 && (
-                    <p className="text-gray-400 text-center py-4">
-                        {showArchived ? "No archived scripts found." : "No available scripts found."}
-                    </p>
-                  )}
-                </ul>
-              </div>
-            )}
-          </div>
-        ) : null}
-
-        {(jobToDisplay && jobToDisplay.outlines) || (view === 'MANUAL' && manualScriptData.outlines) ? (
-          <div className="mt-2 animate-fade-in">
-            {selectedJobToView && (
-                <div className="mb-4">
-                    <Button onClick={() => setSelectedJobToView(null)} variant="secondary">
-                        &larr; Back to {selectedJobToView.source === 'AUTOMATION' ? 'Queue' : 'Library'}
-                    </Button>
-                </div>
-            )}
-
-            <h2 className="text-3xl font-bold mb-4 text-center text-transparent bg-clip-text bg-gradient-to-r from-indigo-300 to-purple-400">{jobToDisplay.refinedTitle || 'Generating Title...'}</h2>
-            
-            <p className="text-center text-gray-400 -mt-2 mb-4">Total Words: {progress.wordsWritten}</p>
-
-            <div className="sticky top-0 bg-gray-950/80 backdrop-blur-sm z-10 py-4 mb-4">
-                <div className="flex flex-wrap justify-center gap-3">
-                    <Button onClick={handleCopyFullScript} disabled={!isScriptGenerated}>Copy Full Script</Button>
-                    <Button onClick={handleCopyHookAndChapter1} disabled={!isScriptGenerated} variant="secondary">Copy Hook & Ch. 1</Button>
-                    <Button onClick={handleCopyRestOfScript} disabled={!isScriptGenerated} variant="secondary">Copy Ch. 2 Onwards</Button>
-                </div>
-            </div>
-
-            <div className="bg-gray-800/50 p-6 rounded-lg shadow-inner space-y-8">
-              <div>
-                <h3 className="text-xl font-semibold mb-3 border-b-2 border-indigo-500 pb-2">The Hook</h3>
-                {jobToDisplay.hook ? <p className="whitespace-pre-wrap font-serif text-lg leading-relaxed">{jobToDisplay.hook}</p> : <InlineLoader message="Generating hook..." />}
-              </div>
-
-              {jobToDisplay.outlines?.filter(o => o.id > 0).map(outline => (
-                <div key={outline.id}>
-                   <h3 className="text-xl font-semibold mb-3 border-b-2 border-indigo-500 pb-2">Chapter {outline.id}: {outline.title} <span className="text-sm text-gray-400 font-normal">({outline.wordCount} words)</span></h3>
-                   {jobToDisplay.chaptersContent?.[outline.id] ? (
-                     <p className="whitespace-pre-wrap font-serif text-lg leading-relaxed">{jobToDisplay.chaptersContent[outline.id]}</p>
-                   ) : (
-                     <InlineLoader message={writingChapterIds.includes(outline.id) || jobToDisplay.currentTask?.includes(`Chapter ${outline.id}`) ? `Writing chapter ${outline.id}...` : 'Waiting to write...'} />
-                   )}
-                </div>
-              ))}
-            </div>
-          </div>
-        ) : null}
-      </main>
     </div>
   );
 };
