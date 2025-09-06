@@ -460,28 +460,34 @@ const App: React.FC = () => {
     }
   };
   
-  const handleGenerateThumbnailImage = async (config: { prompt: string; text?: string; addText?: boolean; baseImage?: string }) => {
+  const handleGenerateThumbnailImage = async (config: {
+    prompt: string;
+    text?: string;
+    addText?: boolean;
+    baseImage?: string;
+    model: 'gemini-2.5-flash-image-preview' | 'imagen-4.0-generate-001';
+  }) => {
     setIsGeneratingThumbnailImage(true);
     try {
-        const { prompt, text = '', addText = false, baseImage } = config;
-        
-        const imageUrl = await generateThumbnailImage(prompt, text, addText, baseImage);
-        
-        const currentUrls = jobToDisplay?.thumbnailImageUrls || [];
-        const updatedUrls = [...currentUrls, imageUrl];
-        
-        const updatedJobData = { thumbnailImageUrls: updatedUrls };
+      const { prompt, text = '', addText = false, baseImage, model } = config;
 
-        if (jobToDisplay?.id) {
-            updateJob(jobToDisplay.id, updatedJobData);
-        } else {
-            setManualScriptData(prev => ({ ...prev, ...updatedJobData }));
-        }
+      const imageUrl = await generateThumbnailImage(prompt, text, addText, model, baseImage);
+
+      const currentUrls = jobToDisplay?.thumbnailImageUrls || [];
+      const updatedUrls = [...currentUrls, imageUrl];
+
+      const updatedJobData = { thumbnailImageUrls: updatedUrls };
+
+      if (jobToDisplay?.id) {
+        updateJob(jobToDisplay.id, updatedJobData);
+      } else {
+        setManualScriptData(prev => ({ ...prev, ...updatedJobData }));
+      }
     } catch (error) {
-        console.error("Failed to generate thumbnail image:", error);
-        alert(`Failed to generate thumbnail image. Error: ${error instanceof Error ? error.message : String(error)}`);
+      console.error("Failed to generate thumbnail image:", error);
+      alert(`Failed to generate thumbnail image. Error: ${error instanceof Error ? error.message : String(error)}`);
     } finally {
-        setIsGeneratingThumbnailImage(false);
+      setIsGeneratingThumbnailImage(false);
     }
   };
 

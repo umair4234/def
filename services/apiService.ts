@@ -1,6 +1,6 @@
 
 
-import { GoogleGenAI, GenerateContentParameters, GenerateContentResponse } from "@google/genai";
+import { GoogleGenAI, GenerateContentParameters, GenerateContentResponse, GenerateImagesParameters, GenerateImagesResponse } from "@google/genai";
 
 const SESSION_KEY_INDEX = 'current_gemini_api_key_index';
 // The free tier for gemini-2.5-flash is 10 RPM. 60s / 10 = 6s per request.
@@ -17,6 +17,98 @@ const getCurrentKeyIndex = (): number => {
 const setCurrentKeyIndex = (index: number) => {
     sessionStorage.setItem(SESSION_KEY_INDEX, index.toString());
 };
+
+export const callImagenApi = async (
+    params: Omit<GenerateImagesParameters, 'model'> & { model: string }
+): Promise<GenerateImagesResponse> => {
+    const apiKeys: string[] = JSON.parse(localStorage.getItem('gemini_api_keys') || '[]');
+    
+    if (apiKeys.length === 0) {
+        throw new Error("No Gemini API keys found. Please add a key in the API Manager.");
+    }
+
+    const now = Date.now();
+    const timeSinceLastCall = now - lastApiCallTimestamp;
+    
+    if (timeSinceLastCall < MIN_DELAY_BETWEEN_CALLS_MS) {
+        const waitTime = MIN_DELAY_BETWEEN_CALLS_MS - timeSinceLastCall;
+        console.log(`Rate limiting: waiting for ${waitTime}ms...`);
+        await new Promise(resolve => setTimeout(resolve, waitTime));
+    }
+    
+    lastApiCallTimestamp = Date.now();
+
+    let keyIndex = getCurrentKeyIndex();
+    if (keyIndex >= apiKeys.length) {
+        keyIndex = 0;
+    }
+
+    let lastError: Error | null = null;
+
+    for (let i = 0; i < apiKeys.length; i++) {
+        const currentKey = apiKeys[keyIndex];
+        try {
+            const ai = new GoogleGenAI({ apiKey: currentKey });
+            const response = await ai.models.generateImages(params);
+            
+            if (response.generatedImages && response.generatedImages.length > 0) {
+                setCurrentKeyIndex(keyIndex);
+                return response;
+            } else {
+                throw new Error("Imagen API returned an empty or invalid response.");
+            }
+
+        } catch (error) {
+            console.warn(`API key at index ${keyIndex} failed.`, error);
+            lastError = error as Error;
+
+            let rateLimitWaitMs = 0;
+            try {
+                const errorObj = JSON.parse((error as Error).message);
+                if (errorObj?.error?.code === 429 && errorObj?.error?.details) {
+                    const retryInfo = errorObj.error.details.find(
+                        (d: any) => d['@type'] === 'type.googleapis.com/google.rpc.RetryInfo'
+                    );
+                    if (retryInfo?.retryDelay) {
+                        const delayStr = retryInfo.retryDelay;
+                        const seconds = parseInt(delayStr.replace('s', ''), 10);
+                        if (!isNaN(seconds) && seconds > 0) {
+                            rateLimitWaitMs = seconds * 1000;
+                        }
+                    }
+                }
+            } catch (e) {
+                // Not a structured JSON error, or parsing failed. Proceed without extra wait.
+            }
+            
+            if (rateLimitWaitMs > 0) {
+                console.log(`Rate limit exceeded. API suggested waiting for ${rateLimitWaitMs / 1000}s. Pausing...`);
+                await new Promise(resolve => setTimeout(resolve, rateLimitWaitMs));
+                lastApiCallTimestamp = Date.now();
+            }
+            
+            keyIndex = (keyIndex + 1) % apiKeys.length;
+        }
+    }
+    
+    setCurrentKeyIndex(keyIndex);
+
+    if (lastError) {
+        let finalMessage = lastError.message;
+        try {
+            const parsedError = JSON.parse(lastError.message);
+            if (parsedError?.error?.message) {
+                finalMessage = parsedError.error.message;
+            }
+        } catch (e) {
+            // Not a JSON error message, use it as is.
+        }
+        throw new Error(`All API keys failed. Last error: ${finalMessage}`);
+    }
+
+    throw new Error("All available API keys failed. Please check your keys in the API Manager or add new ones.");
+};
+
 
 export const callGeminiApi = async (
     params: Omit<GenerateContentParameters, 'model'> & { model: string }

@@ -1,7 +1,7 @@
 import { Modality, Type } from "@google/genai";
 import { ChapterOutline, ThumbnailIdeas } from "../types";
 import { OUTLINES_PROMPT_TEMPLATE, HOOK_PROMPT_TEMPLATE, CHAPTER_BATCH_PROMPT_TEMPLATE, THUMBNAIL_IDEAS_PROMPT_TEMPLATE } from "../constants";
-import { callGeminiApi } from "./apiService";
+import { callGeminiApi, callImagenApi } from "./apiService";
 
 export const generateOutlines = async (title: string, concept: string, duration: number): Promise<string> => {
   const prompt = OUTLINES_PROMPT_TEMPLATE(title, concept, duration);
@@ -95,39 +95,63 @@ function fileToGenerativePart(dataUrl: string) {
 }
 
 export const generateThumbnailImage = async (
-  prompt: string, 
-  textOverlay: string, 
-  addTextOverlay: boolean, 
+  prompt: string,
+  textOverlay: string,
+  addTextOverlay: boolean,
+  model: 'gemini-2.5-flash-image-preview' | 'imagen-4.0-generate-001',
   baseImage?: string
 ): Promise<string> => {
-  let fullPrompt = prompt;
+  if (model === 'imagen-4.0-generate-001') {
+    if (baseImage) {
+      throw new Error("Imagen 4.0 does not support image editing/variations.");
+    }
 
-  if (!baseImage && addTextOverlay) {
-    // For initial generation with text.
-    fullPrompt = `${prompt}. The image MUST have the following text prominently displayed on it, in a large, bold, easy-to-read font, styled like a viral YouTube thumbnail: "${textOverlay}"`;
-  }
+    const response = await callImagenApi({
+      model: 'imagen-4.0-generate-001',
+      prompt: prompt, // Text overlay is not reliable with Imagen
+      config: {
+        numberOfImages: 1,
+        outputMimeType: 'image/jpeg',
+        aspectRatio: '16:9',
+      },
+    });
 
-  const parts: any[] = [];
-  if (baseImage) {
-    parts.push(fileToGenerativePart(baseImage));
-  }
-  parts.push({ text: fullPrompt });
+    const base64ImageBytes: string = response.generatedImages[0].image.imageBytes;
+    return `data:image/jpeg;base64,${base64ImageBytes}`;
 
-  const response = await callGeminiApi({
-    model: 'gemini-2.5-flash-image-preview',
-    contents: [{ parts }],
-    config: {
+  } else { // gemini-2.5-flash-image-preview
+    let fullPrompt = prompt;
+
+    if (!baseImage && addTextOverlay) {
+      // For initial generation with text.
+      fullPrompt = `${prompt}. The image MUST have the following text prominently displayed on it, in a large, bold, easy-to-read font, styled like a viral YouTube thumbnail: "${textOverlay}"`;
+    } else if (baseImage) {
+      // For variations, the prompt is just the edit instruction.
+      fullPrompt = prompt;
+    }
+
+    const parts: any[] = [];
+    if (baseImage) {
+      parts.push(fileToGenerativePart(baseImage));
+    }
+    parts.push({ text: fullPrompt });
+
+    const response = await callGeminiApi({
+      model: 'gemini-2.5-flash-image-preview',
+      contents: { parts }, // FIX: The payload should be an object, not an array of objects.
+      config: {
         responseModalities: [Modality.IMAGE, Modality.TEXT],
-    },
-  });
+      },
+    });
 
-  const imagePart = response.candidates?.[0]?.content?.parts?.find(part => part.inlineData);
+    const imagePart = response.candidates?.[0]?.content?.parts?.find(part => part.inlineData);
 
-  if (!imagePart || !imagePart.inlineData) {
+    if (!imagePart || !imagePart.inlineData) {
       console.error("Image generation response did not contain an image part:", response);
       throw new Error("Image generation failed to return an image.");
+    }
+
+    const { mimeType, data } = imagePart.inlineData;
+    return `data:${mimeType};base64,${data}`;
   }
-  
-  const { mimeType, data } = imagePart.inlineData;
-  return `data:${mimeType};base64,${data}`;
 };
