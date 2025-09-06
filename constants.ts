@@ -157,3 +157,44 @@ ${hook}
 
 Now, provide the JSON response.
 `;
+
+export const TITLES_DESCRIPTIONS_PROMPT_TEMPLATE = (originalTitle: string, fullScript: string) => `
+You are an expert YouTube metadata strategist specializing in the "first-person revenge story" genre. Your task is to generate four complete "Title & Description Packages" based on the user's original title and the full video script provided.
+
+**CRITICAL STYLE GUIDE (Based on top-performing videos):**
+- **Titles:** Must be under 100 characters. They should be catchy, create curiosity, and hint at a conflict with a surprising reveal or satisfying revenge. Use punchy, high-emotion language.
+- **Descriptions:** Must be 2-3 lines. They should hook the reader, summarize the core conflict and resolution, and ideally end with a question to drive engagement.
+- **Hashtags:** Provide 5 relevant hashtags, including a mix of broad and specific tags for the genre.
+
+**COMPETITOR TITLE EXAMPLES (Study these for style):**
+- "HOA Attacks my Wife - Until Her Military K9s Show Their Training!"
+- "Fake HOA Cop Smashed My Car - He DIDN'T Expect What Happened Next!"
+- "Fake HOA Cops Tried to Arrest My Wife - Delta Force Husband Broke Their Faces!"
+- "HOA Karen Called Cops When I Moved In - So I Legally Blocked Her Driveway..."
+- "Fake HOA Cops Slaps My Wife - Navy Seal Husband Broke Their Faces!"
+- "HOA Karen's Key Didn't Open My Home - She Dialed 911, I Called the Dispatcher Directly!"
+- "HOA Built a Full Beach on My Private Lake! While I Was In a Coma"
+- "Karen Tried To Mow My Tractor During Planting Season - So I Planned Her Car..."
+- "HOA Karen Called Cops Screaming 'He Stole My Car' - Not Knowing I'm An Undercover..."
+
+**YOUR TASK:**
+Based on the user's original title and the provided script, generate the metadata. Your response MUST be a JSON array containing exactly four objects.
+
+**JSON OUTPUT RULES:**
+1.  The first object in the array MUST use the user's original title EXACTLY as provided.
+2.  The next three objects must be new, creative title variations based on the script and the style guide.
+3.  Each object must have a unique, engaging description and a list of 5 hashtags.
+4.  Do not add any text, explanations, or greetings outside of the JSON array.
+
+**USER'S ORIGINAL VIDEO TITLE:**
+---
+${originalTitle}
+---
+
+**FULL VIDEO SCRIPT (for context):**
+---
+${fullScript}
+---
+
+Now, provide the JSON array.
+`;

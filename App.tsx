@@ -1,6 +1,6 @@
 import React, { useState, useCallback, useRef, useMemo, useEffect } from 'react';
-import { ChapterOutline, AppStep, GenerationStatus, AppView, ScriptJob, AutomationJobStatus, LibraryStatus, ThumbnailIdeas } from './types';
-import { generateOutlines, generateHook, generateChapterBatch, generateThumbnailIdeas, generateThumbnailImage } from './services/geminiService';
+import { ChapterOutline, AppStep, GenerationStatus, AppView, ScriptJob, AutomationJobStatus, LibraryStatus, ThumbnailIdeas, TitleDescriptionPackage } from './types';
+import { generateOutlines, generateHook, generateChapterBatch, generateThumbnailIdeas, generateThumbnailImage, generateTitlesAndDescriptions } from './services/geminiService';
 import Button from './components/Button';
 import InlineLoader from './components/InlineLoader';
 import GenerationControls from './components/GenerationControls';
@@ -10,6 +10,120 @@ import GearIcon from './components/GearIcon';
 import ThumbnailIdeasModal from './components/ThumbnailIdeasModal';
 import CopyControls from './components/CopyControls';
 import ManualProgressTracker from './components/ManualProgressTracker';
+
+// --- NEW COMPONENT: TitleDescriptionManager ---
+interface TitleDescriptionManagerProps {
+  isOpen: boolean;
+  onClose: () => void;
+  packages: TitleDescriptionPackage[] | null;
+  isLoading: boolean;
+  onUpdateStatus: (packageId: number, newStatus: 'Used' | 'Unused') => void;
+}
+
+const TitleDescriptionManager: React.FC<TitleDescriptionManagerProps> = ({
+  isOpen,
+  onClose,
+  packages,
+  isLoading,
+  onUpdateStatus,
+}) => {
+  const [copiedItem, setCopiedItem] = useState<string | null>(null);
+
+  const handleCopy = (text: string, identifier: string) => {
+    navigator.clipboard.writeText(text).then(() => {
+      setCopiedItem(identifier);
+      setTimeout(() => setCopiedItem(null), 2000);
+    }).catch(err => {
+      console.error('Failed to copy text: ', err);
+      alert('Failed to copy text.');
+    });
+  };
+
+  if (!isOpen) return null;
+
+  return (
+    <div
+      className="fixed inset-0 bg-gray-900 bg-opacity-80 flex items-center justify-center z-50"
+      onClick={onClose}
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="titleManagerTitle"
+    >
+      <div
+        className="bg-gray-800 rounded-lg shadow-2xl p-6 w-full max-w-4xl relative text-gray-200 flex flex-col"
+        onClick={e => e.stopPropagation()}
+      >
+        <h2 id="titleManagerTitle" className="text-2xl font-bold text-indigo-400 mb-4">Title & Description Manager</h2>
+
+        {isLoading && (
+          <div className="flex items-center justify-center p-4 bg-gray-700/50 rounded-md">
+            <div className="w-6 h-6 border-2 border-dashed rounded-full animate-spin border-indigo-400 mr-3"></div>
+            <p className="text-gray-300 text-sm">Generating titles and descriptions...</p>
+          </div>
+        )}
+
+        {!isLoading && packages && (
+          <div className="space-y-4 overflow-y-auto max-h-[70vh] pr-2">
+            {packages.map((pkg) => (
+              <div key={pkg.id} className="bg-gray-900 border border-gray-700 rounded-lg p-4">
+                <div className="flex justify-between items-start mb-3">
+                  <h3 className="text-lg font-semibold text-gray-200 pr-4">{pkg.title}</h3>
+                  <div className="flex items-center gap-2 flex-shrink-0">
+                    <Button
+                      variant={pkg.status === 'Used' ? 'primary' : 'secondary'}
+                      onClick={() => onUpdateStatus(pkg.id, pkg.status === 'Used' ? 'Unused' : 'Used')}
+                      className="text-xs px-3 py-1"
+                    >
+                      {pkg.status}
+                    </Button>
+                    <Button
+                      variant="secondary"
+                      onClick={() => handleCopy(pkg.title, `title-${pkg.id}`)}
+                      className="text-xs px-3 py-1"
+                    >
+                      {copiedItem === `title-${pkg.id}` ? 'Copied!' : 'Copy Title'}
+                    </Button>
+                  </div>
+                </div>
+
+                <p className="text-gray-400 text-sm mb-3">{pkg.description}</p>
+                <Button
+                  variant="secondary"
+                  onClick={() => handleCopy(pkg.description, `desc-${pkg.id}`)}
+                  className="text-xs px-3 py-1 mb-3"
+                >
+                  {copiedItem === `desc-${pkg.id}` ? 'Copied!' : 'Copy Description'}
+                </Button>
+                
+                <div className="flex flex-wrap gap-2 items-center">
+                  {pkg.hashtags.map((tag, i) => (
+                    <span key={i} className="bg-gray-700 text-indigo-300 text-xs font-medium px-2.5 py-1 rounded-full">{tag}</span>
+                  ))}
+                   <Button
+                      variant="secondary"
+                      onClick={() => handleCopy(pkg.hashtags.join(' '), `tags-${pkg.id}`)}
+                      className="text-xs px-3 py-1 ml-auto"
+                    >
+                      {copiedItem === `tags-${pkg.id}` ? 'Copied!' : 'Copy Hashtags'}
+                    </Button>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+        
+        {!isLoading && !packages && (
+            <p className="text-gray-500 text-center py-4">No packages generated. Try again.</p>
+        )}
+
+        <div className="mt-6 text-right border-t border-gray-700 pt-4">
+          <Button onClick={onClose} variant="secondary">Close</Button>
+        </div>
+      </div>
+    </div>
+  );
+};
+
 
 // Custom hook for local storage persistence
 function useLocalStorage<T>(key: string, initialValue: T): [T, React.Dispatch<React.SetStateAction<T>>] {
@@ -82,6 +196,10 @@ const App: React.FC = () => {
   const [thumbnailIdeas, setThumbnailIdeas] = useState<ThumbnailIdeas | null>(null);
   const [isGeneratingThumbnailIdeas, setIsGeneratingThumbnailIdeas] = useState(false);
   const [isGeneratingThumbnailImage, setIsGeneratingThumbnailImage] = useState(false);
+  
+  // --- Title & Description State ---
+  const [isTitleManagerOpen, setIsTitleManagerOpen] = useState(false);
+  const [isGeneratingTitles, setIsGeneratingTitles] = useState(false);
 
 
   // --- UI State ---
@@ -491,6 +609,60 @@ const App: React.FC = () => {
     }
   };
 
+  // --- Title & Description Handlers ---
+  const handleGenerateTitlesAndDescriptions = async (job: ScriptJob | Partial<ScriptJob>) => {
+    if (!job?.hook || !job.title || !job.chaptersContent?.length) {
+        alert("A complete script (hook and chapters) is required to generate titles and descriptions.");
+        return;
+    }
+    
+    // If packages exist, just open the modal.
+    if (job.titleDescriptionPackages) {
+        setIsTitleManagerOpen(true);
+        return;
+    }
+
+    setIsTitleManagerOpen(true);
+    setIsGeneratingTitles(true);
+    try {
+        const fullScript = `${job.hook}\n\n${job.chaptersContent.join('\n\n')}`;
+        const packages = await generateTitlesAndDescriptions(job.title, fullScript);
+        
+        const updatedJobData = { titleDescriptionPackages: packages };
+
+        if (job.id) {
+            updateJob(job.id, updatedJobData);
+        } else {
+            setManualScriptData(prev => ({ ...prev, ...updatedJobData }));
+        }
+    } catch (error) {
+        console.error("Failed to generate titles and descriptions:", error);
+        alert(`Failed to generate titles & descriptions. Error: ${error instanceof Error ? error.message : String(error)}`);
+    } finally {
+        setIsGeneratingTitles(false);
+    }
+  };
+
+  const handleUpdateTitlePackageStatus = (packageId: number, newStatus: 'Used' | 'Unused') => {
+    const updateLogic = (prev: ScriptJob | Partial<ScriptJob>): Partial<ScriptJob> => {
+        const updatedPackages = prev.titleDescriptionPackages?.map(p => 
+            p.id === packageId ? { ...p, status: newStatus } : p
+        );
+        return { ...prev, titleDescriptionPackages: updatedPackages };
+    };
+
+    if (jobToDisplay?.id) {
+        // Find the job in the main list and update it to persist
+        setJobs(prevJobs => prevJobs.map(j => 
+            j.id === jobToDisplay.id ? updateLogic(j) as ScriptJob : j
+        ));
+        // Also update the currently viewed job
+        setSelectedJobToView(prev => prev ? updateLogic(prev) as ScriptJob : null);
+    } else {
+        setManualScriptData(prev => updateLogic(prev));
+    }
+  };
+
   // --- UI Components ---
   const renderNav = () => (
     <nav className="flex items-center justify-between p-4 bg-gray-900 border-b border-gray-800">
@@ -523,13 +695,22 @@ const App: React.FC = () => {
           <h2 className="text-2xl font-bold text-indigo-400 mb-2">{job.refinedTitle || job.title}</h2>
           <p className="text-gray-400 italic">{job.concept}</p>
         </div>
-        <Button 
-            onClick={() => handleGenerateThumbnailIdeas(job)} 
-            disabled={!job.hook || isGeneratingThumbnailIdeas}
-            variant="secondary"
-        >
-            {isGeneratingThumbnailIdeas ? 'Generating...' : job.thumbnailIdeas ? '💡 View/Regenerate Ideas' : '💡 Generate Thumbnail Ideas'}
-        </Button>
+        <div className="flex flex-col sm:flex-row gap-2">
+            <Button 
+                onClick={() => handleGenerateTitlesAndDescriptions(job)}
+                disabled={!job.hook || isGeneratingTitles}
+                variant="secondary"
+            >
+                {isGeneratingTitles ? 'Generating...' : job.titleDescriptionPackages ? '📊 View Titles/Descriptions' : '📊 Generate Titles/Descriptions'}
+            </Button>
+            <Button 
+                onClick={() => handleGenerateThumbnailIdeas(job)} 
+                disabled={!job.hook || isGeneratingThumbnailIdeas}
+                variant="secondary"
+            >
+                {isGeneratingThumbnailIdeas ? 'Generating...' : job.thumbnailIdeas ? '💡 View/Regenerate Ideas' : '💡 Generate Thumbnail Ideas'}
+            </Button>
+        </div>
       </div>
       
       <CopyControls job={job} totalWords={totalWords} />
@@ -810,6 +991,13 @@ const App: React.FC = () => {
         onReanalyze={() => handleGenerateThumbnailIdeas(jobToDisplay!, true)}
         onGenerateImage={handleGenerateThumbnailImage}
         thumbnailImageUrls={jobToDisplay?.thumbnailImageUrls || null}
+      />
+      <TitleDescriptionManager
+        isOpen={isTitleManagerOpen}
+        onClose={() => setIsTitleManagerOpen(false)}
+        packages={jobToDisplay?.titleDescriptionPackages || null}
+        isLoading={isGeneratingTitles}
+        onUpdateStatus={handleUpdateTitlePackageStatus}
       />
     </div>
   );

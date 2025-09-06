@@ -25,6 +25,14 @@ export type AutomationJobStatus = 'PENDING' | 'RUNNING' | 'DONE' | 'FAILED';
 
 export type LibraryStatus = 'AVAILABLE' | 'ARCHIVED';
 
+export interface TitleDescriptionPackage {
+  id: number;
+  title: string;
+  description: string;
+  hashtags: string[];
+  status: 'Unused' | 'Used';
+}
+
 export interface ScriptJob {
   id: string;
   source: 'MANUAL' | 'AUTOMATION';
@@ -45,6 +53,7 @@ export interface ScriptJob {
   chaptersContent: string[];
   thumbnailIdeas?: ThumbnailIdeas;
   thumbnailImageUrls?: string[];
+  titleDescriptionPackages?: TitleDescriptionPackage[];
   // Progress Tracking
   currentTask?: string;
   wordsWritten?: number;

@@ -1,6 +1,6 @@
 import { Modality, Type } from "@google/genai";
-import { ChapterOutline, ThumbnailIdeas } from "../types";
-import { OUTLINES_PROMPT_TEMPLATE, HOOK_PROMPT_TEMPLATE, CHAPTER_BATCH_PROMPT_TEMPLATE, THUMBNAIL_IDEAS_PROMPT_TEMPLATE } from "../constants";
+import { ChapterOutline, ThumbnailIdeas, TitleDescriptionPackage } from "../types";
+import { OUTLINES_PROMPT_TEMPLATE, HOOK_PROMPT_TEMPLATE, CHAPTER_BATCH_PROMPT_TEMPLATE, THUMBNAIL_IDEAS_PROMPT_TEMPLATE, TITLES_DESCRIPTIONS_PROMPT_TEMPLATE } from "../constants";
 import { callGeminiApi, callImagenApi } from "./apiService";
 
 export const generateOutlines = async (title: string, concept: string, duration: number): Promise<string> => {
@@ -76,6 +76,52 @@ export const generateThumbnailIdeas = async (title: string, hook: string): Promi
   } catch (error) {
     console.error("Failed to parse thumbnail ideas JSON:", error);
     throw new Error("Could not parse the thumbnail ideas from the AI response.");
+  }
+};
+
+export const generateTitlesAndDescriptions = async (originalTitle: string, fullScript: string): Promise<TitleDescriptionPackage[]> => {
+  const prompt = TITLES_DESCRIPTIONS_PROMPT_TEMPLATE(originalTitle, fullScript);
+  const response = await callGeminiApi({
+    model: 'gemini-2.5-flash',
+    contents: prompt,
+    config: {
+      responseMimeType: "application/json",
+      responseSchema: {
+        type: Type.ARRAY,
+        items: {
+          type: Type.OBJECT,
+          properties: {
+            title: {
+              type: Type.STRING,
+              description: "The video title, under 100 characters."
+            },
+            description: {
+              type: Type.STRING,
+              description: "A 2-3 line summary of the video's story."
+            },
+            hashtags: {
+              type: Type.ARRAY,
+              items: { type: Type.STRING },
+              description: "An array of 5 relevant hashtags."
+            }
+          }
+        }
+      }
+    }
+  });
+
+  try {
+    const jsonStr = response.text.trim();
+    const parsed = JSON.parse(jsonStr) as Omit<TitleDescriptionPackage, 'id' | 'status'>[];
+    // Add the id and default status client-side
+    return parsed.map((item, index) => ({
+      ...item,
+      id: index + 1,
+      status: 'Unused'
+    }));
+  } catch (error) {
+    console.error("Failed to parse titles and descriptions JSON:", error);
+    throw new Error("Could not parse the titles and descriptions from the AI response.");
   }
 };
 
