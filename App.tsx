@@ -11,6 +11,26 @@ import ThumbnailIdeasModal from './components/ThumbnailIdeasModal';
 import CopyControls from './components/CopyControls';
 import ManualProgressTracker from './components/ManualProgressTracker';
 
+// --- NEW COMPONENT: StatusTag ---
+const StatusTag: React.FC<{ status: AutomationJobStatus }> = ({ status }) => {
+  const statusConfig: { [key in AutomationJobStatus]: { text: string, className: string } } = {
+    PENDING: { text: 'Pending', className: 'bg-yellow-600 text-yellow-100' },
+    RUNNING: { text: 'Running', className: 'bg-blue-600 text-blue-100 animate-pulse' },
+    DONE:    { text: 'Done',    className: 'bg-green-600 text-green-100' },
+    FAILED:  { text: 'Failed',  className: 'bg-red-600 text-red-100' },
+  };
+
+  const config = statusConfig[status];
+  if (!config) return null;
+
+  return (
+    <span className={`px-2.5 py-1 text-xs font-semibold rounded-full inline-block ${config.className}`}>
+      {config.text}
+    </span>
+  );
+};
+
+
 // --- NEW COMPONENT: TitleDescriptionManager ---
 interface TitleDescriptionManagerProps {
   isOpen: boolean;
@@ -70,9 +90,12 @@ const TitleDescriptionManager: React.FC<TitleDescriptionManagerProps> = ({
                   <h3 className="text-lg font-semibold text-gray-200 pr-4">{pkg.title}</h3>
                   <div className="flex items-center gap-2 flex-shrink-0">
                     <Button
-                      variant={pkg.status === 'Used' ? 'primary' : 'secondary'}
                       onClick={() => onUpdateStatus(pkg.id, pkg.status === 'Used' ? 'Unused' : 'Used')}
-                      className="text-xs px-3 py-1"
+                      className={`text-xs px-3 py-1 text-white ${
+                        pkg.status === 'Used'
+                          ? 'bg-green-600 hover:bg-green-500 focus:ring-green-500'
+                          : 'bg-orange-600 hover:bg-orange-500 focus:ring-orange-500'
+                      }`}
                     >
                       {pkg.status}
                     </Button>
@@ -801,8 +824,11 @@ const App: React.FC = () => {
                     <div key={job.id} className="bg-gray-800 p-4 rounded-md flex items-center justify-between">
                         <div>
                             <p className="font-semibold text-gray-200">{job.title}</p>
-                            <p className="text-sm text-gray-400">{job.currentTask || job.status}</p>
-                            {job.status === 'FAILED' && <p className="text-xs text-red-400 truncate max-w-xs" title={job.error}>Error: {job.error}</p>}
+                            <div className="flex items-center gap-2 mt-1">
+                                <StatusTag status={job.status} />
+                                <p className="text-sm text-gray-400 truncate max-w-xs">{job.currentTask || 'Waiting...'}</p>
+                            </div>
+                            {job.status === 'FAILED' && <p className="text-xs text-red-400 truncate max-w-xs mt-1" title={job.error}>Error: {job.error}</p>}
                         </div>
                         <div className="flex gap-2">
                           {job.status === 'FAILED' ? (
@@ -839,7 +865,10 @@ const App: React.FC = () => {
                      <div key={job.id} className="bg-gray-800 p-4 rounded-md flex items-center justify-between">
                         <div>
                             <p className="font-semibold text-gray-200">{job.refinedTitle || job.title}</p>
-                            <p className="text-sm text-gray-400">Created: {new Date(job.createdAt).toLocaleDateString()}</p>
+                            <div className="flex items-center gap-2 mt-1">
+                                <StatusTag status={job.status} />
+                                <p className="text-sm text-gray-400">Created: {new Date(job.createdAt).toLocaleDateString()}</p>
+                            </div>
                         </div>
                         <div className="flex gap-2">
                             <Button onClick={() => setSelectedJobToView(job)} variant="secondary">View</Button>
